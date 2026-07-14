@@ -313,6 +313,8 @@ function render() {
   renderFiles();
 }
 function renderBreadcrumb() {
+  // 正在编辑路径栏时，不做渲染（防止双击时 navigate 的 render 覆盖输入框）
+  if (_editingBreadcrumb) return;
   const bc = $('#breadcrumb');
   bc.innerHTML = '';
   if (state.skillsMode) { bc.innerHTML = `<span class="crumb last">Skills 透视</span>`; return; }
@@ -348,6 +350,71 @@ function renderBreadcrumb() {
   }
   // 滚到末尾，确保被挤压时也能看到当前所在目录（而非根目录）
   requestAnimationFrame(() => { bc.scrollLeft = bc.scrollWidth; });
+
+  // 双击路径栏 → 显示可编辑输入框，支持手动输入路径
+  bc.ondblclick = () => editBreadcrumb();
+}
+
+// 正在编辑路径栏的标志，防止双击时 navigate 的 render 覆盖输入框
+let _editingBreadcrumb = false;
+
+// 双击路径栏变为直接输入路径
+function editBreadcrumb() {
+  const bc = $('#breadcrumb');
+  if (!state.cwd) return;
+  _editingBreadcrumb = true;
+  const currentPath = state.cwd;
+  bc.innerHTML = '';
+
+  // 创建输入框
+  const input = document.createElement('input');
+  input.type = 'text';
+  input.className = 'breadcrumb-input';
+  input.value = currentPath;
+  bc.appendChild(input);
+  input.focus();
+  input.select();
+
+  // 回车：验证路径并跳转
+  input.onkeydown = (e) => {
+    if (e.key === 'Enter') {
+      e.preventDefault();
+      const val = input.value.trim();
+      if (!val) { _editingBreadcrumb = false; renderBreadcrumb(); return; }
+      // 验证路径存在性
+      confirmPath(val).then((exists) => {
+        if (exists) {
+          _editingBreadcrumb = false;
+          navigate(val);
+        } else {
+          toast('路径不存在：' + val, true);
+          input.focus();
+          input.select();
+        }
+      });
+    } else if (e.key === 'Escape') {
+      _editingBreadcrumb = false;
+      renderBreadcrumb();
+    }
+  };
+
+  // 失焦时恢复面包屑
+  input.onblur = () => {
+    setTimeout(() => {
+      if (bc.contains(input)) {
+        _editingBreadcrumb = false;
+        renderBreadcrumb();
+      }
+    }, 150);
+  };
+}
+
+// 通过 API 验证路径是否存在
+async function confirmPath(p) {
+  try {
+    const data = await api('/api/list?path=' + encodeURIComponent(p));
+    return !data.error;
+  } catch { return false; }
 }
 function visibleEntries() {
   let list = state.entries.slice();

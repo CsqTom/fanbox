@@ -224,6 +224,14 @@ kbd {
 .breadcrumb .crumb-proj { width: 7px; height: 7px; border-radius: 50%; margin-left: 6px; flex: none; align-self: center; }
 
 /* 右侧操作区永不收缩变形——挤压压力全部交给面包屑（它能横向滚动） */
+/* 路径栏双击编辑输入框 */
+.breadcrumb-input {
+  flex: 1; min-width: 130px; height: 28px; padding: 0 8px; border: 1px solid var(--accent);
+  border-radius: 6px; background: var(--bg-2); color: var(--text); font-size: 13px;
+  font-family: var(--font-mono, 'SF Mono', 'Fira Code', monospace); outline: none;
+}
+.breadcrumb-input:focus { border-color: var(--accent); box-shadow: 0 0 0 2px var(--accent-soft); }
+
 .topbar-actions { display: flex; align-items: center; gap: 10px; flex: none; white-space: nowrap; }
 /* 顶栏越窄越往下藏，低频控件先走，终端按钮永远保住（tb-* 由 ResizeObserver 按顶栏自身宽度打） */
 #topbar.tb-sm #gridsize-seg { display: none; }

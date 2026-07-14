@@ -59,9 +59,27 @@ function createWindow() {
   win.on('resize', remember);
   win.on('move', remember);
   // macOS：点左上角红叉只隐藏到 Dock（保活渲染进程，所有界面/终端状态原样保留），真正退出走 ⌘Q。
+  // 非 macOS（Windows 等）：退出时如果有终端在运行，弹出确认对话框，防止手滑中断 agent 任务
   win.on('close', (e) => {
     saveBounds();
-    if (process.platform === 'darwin' && !isQuitting) { e.preventDefault(); win.hide(); }
+    if (process.platform === 'darwin' && !isQuitting) { e.preventDefault(); win.hide(); return; }
+    // 非 macOS 平台：检查终端运行状态
+    if (!isQuitting && terminals.size > 0) {
+      e.preventDefault();
+      const choice = dialog.showMessageBoxSync(win, {
+        type: 'warning',
+        buttons: [M('取消', 'Cancel'), M('退出', 'Quit')],
+        defaultId: 0,
+        cancelId: 0,
+        message: M(`还有 ${terminals.size} 个终端会话在运行`, `${terminals.size} terminal session(s) still running`),
+        detail: M('退出会终止正在运行的 agent 任务，确定退出？', 'Quitting will terminate running agent tasks. Quit anyway?'),
+      });
+      if (choice === 1) {
+        isQuitting = true;
+        quitConfirmed = true;
+        win.close(); // 再次触发 close，此时 isQuitting 为 true，不再弹确认
+      }
+    }
   });
 
   // 等后端起来再加载（首次 listen 有几十毫秒延迟）
