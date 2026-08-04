@@ -34,6 +34,8 @@ contextBridge.exposeInMainWorld('fanboxFs', {
 contextBridge.exposeInMainWorld('fanboxClipboard', {
   copyImage: (path) => ipcRenderer.invoke('clip:image', { path }),
   copyFile: (path) => ipcRenderer.invoke('clip:file', { path }),
+  // 终端粘贴用：剪贴板里是文字/图片/文件？图片和文件都换成本机路径（navigator.clipboard 只看得见文字）
+  readForPaste: () => ipcRenderer.invoke('clip:read'),
 });
 
 contextBridge.exposeInMainWorld('fanboxDrop', {
@@ -65,9 +67,24 @@ contextBridge.exposeInMainWorld('fanboxWin', {
   trafficLights: (show) => ipcRenderer.invoke('win:traffic', { show }), // 全屏预览时藏/显左上角系统按钮
 });
 
+// Agent 控制接口（/api/agent/*）的渲染侧配合：main 请求开新终端 tab + 被控 tab 闪标记
+contextBridge.exposeInMainWorld('fanboxAgentCtl', {
+  onCreate: (cb) => { const h = (e, m) => cb(m); ipcRenderer.on('agent:term-create', h); return () => ipcRenderer.removeListener('agent:term-create', h); },
+  created: (m) => ipcRenderer.send('agent:term-created', m),
+  onTouch: (cb) => { const h = (e, m) => cb(m); ipcRenderer.on('agent:touch', h); return () => ipcRenderer.removeListener('agent:touch', h); },
+});
+
 contextBridge.exposeInMainWorld('fanboxEnv', {
   isDesktopApp: true,
   platform: process.platform,
+});
+
+// 电源守卫：侧栏「离开电脑」两个开关（合盖继续干活 / 微信遥控不断线），macOS 专属
+contextBridge.exposeInMainWorld('fanboxPower', {
+  state: () => ipcRenderer.invoke('power:state'),            // { platform, lid, wechat, active, busy, terms, wechatConnected }
+  setLid: (on) => ipcRenderer.invoke('power:setLid', { on }),
+  setWechat: (on) => ipcRenderer.invoke('power:setWechat', { on }),
+  onChange: (cb) => { const h = (e, m) => cb(m); ipcRenderer.on('power:changed', h); return () => ipcRenderer.removeListener('power:changed', h); },
 });
 
 // 微信 ClawBot：不经 openclaw，直连 iLink + 本机 claude/codex；桌面输入框也能直接和本机大脑聊
@@ -84,11 +101,8 @@ contextBridge.exposeInMainWorld('fanboxWechat', {
   disconnect: () => ipcRenderer.invoke('wechat:disconnect'),
   cancel: () => ipcRenderer.invoke('wechat:cancel'),
   check: () => ipcRenderer.invoke('wechat:check'),                     // 主动探活 → { state: connected/expired/unreachable/disconnected }
-  setStayAwake: (on) => ipcRenderer.invoke('wechat:setStayAwake', { on }), // 「离开不待机」开关（macOS）
-  powerState: () => ipcRenderer.invoke('wechat:powerState'),          // { stayAwake, active, platform }
   onQr: (cb) => { const h = (e, m) => cb(m); ipcRenderer.on('wechat:qr', h); return () => ipcRenderer.removeListener('wechat:qr', h); },
   onConnected: (cb) => { const h = (e, m) => cb(m); ipcRenderer.on('wechat:connected', h); return () => ipcRenderer.removeListener('wechat:connected', h); },
   onMessage: (cb) => { const h = (e, m) => cb(m); ipcRenderer.on('wechat:message', h); return () => ipcRenderer.removeListener('wechat:message', h); },
   onExpired: (cb) => { const h = (e, m) => cb(m); ipcRenderer.on('wechat:expired', h); return () => ipcRenderer.removeListener('wechat:expired', h); },
-  onPower: (cb) => { const h = (e, m) => cb(m); ipcRenderer.on('wechat:power', h); return () => ipcRenderer.removeListener('wechat:power', h); },
 });

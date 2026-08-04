@@ -24,6 +24,16 @@ const terminals = new Map();
 const termTails = new Map(); // id -> 最近输出尾巴（去 ANSI），给微信 agent 感知别的终端在跑啥/卡哪
 let win = null;
 
+// ---------- Agent 控制接口状态（/api/agent/*，见 docs/12）----------
+// token 每次启动随机生成、不落盘：只注入翻箱自己开的 pty 环境变量（FANBOX_CTL_TOKEN），
+// 能力边界 = FanBox 进程树——只有跑在翻箱终端里的 agent 拿得到门票，本机其他进程无从读取。
+// FANBOX_AGENT_TOKEN 环境变量可覆盖，供本地开发/自动化测试注入已知 token。
+const crypto = require('crypto');
+const AGENT_TOKEN = process.env.FANBOX_AGENT_TOKEN || crypto.randomBytes(24).toString('hex');
+const termBufs = new Map();    // id -> 去 ANSI 滚动缓冲（~200KB），/api/agent/read 的数据源
+const termLastOut = new Map(); // id -> 最近输出时间戳，wait 的 idle 判定
+const termWaiters = new Map(); // id -> Set<fn(text)>，wait 的增量输出订阅
+
 // ---------- 窗口尺寸/位置记忆 ----------
 const stateFile = () => path.join(app.getPath('userData'), 'window-state.json');
 function loadBounds() {
@@ -108,6 +118,8 @@ app.whenReady().then(() => {
   lidIntent = !!readConfig().lidStayAwake;
   wechatStayAwake = !!readConfig().wechatStayAwake;
   if (process.platform === 'darwin') trySetDisableSleep(false);
+  // agent 忙闲轮询：开着「合盖继续干活」时每 30s 结算一次（所有终端收工、缓冲到期后恢复休眠靠它）
+  setInterval(() => { if (lidIntent && terminals.size) refreshLidGuard(); }, 30000);
   buildMenu();
   try {
     const m = Menu.getApplicationMenu();
@@ -187,15 +199,17 @@ async function fetchLatestRelease() {
     });
     if (res.ok) {
       const rel = await res.json();
-      if (rel.tag_name) return { tag: rel.tag_name, url: rel.html_url || REL_PAGE };
+      // 顺带带上资产清单（网页兜底那条路拿不到，那时为 null 表示「不知道」）
+      if (rel.tag_name) return { tag: rel.tag_name, url: rel.html_url || REL_PAGE, assets: (rel.assets || []).map((a) => a.name) };
     }
   } catch { /* 走兜底 */ }
   const res = await net.fetch(REL_PAGE, { headers: { 'User-Agent': 'fanbox-app' } });
   const m = String(res.url || '').match(/\/releases\/tag\/([^/?#]+)/);
-  if (m) return { tag: decodeURIComponent(m[1]), url: res.url };
+  if (m) return { tag: decodeURIComponent(m[1]), url: res.url, assets: null };
   return null;
 }
 let pendingUpdate = null; // 渲染层晚注册监听也能拉到（启动 6 秒的推送 vs init 加载大目录，谁先谁后说不准）
+let latestAssets = null; // 最新 Release 的资产文件名清单；null = 没拿到（走了网页兜底），此时不拦下载
 let updRetry = 0;
 let lastAutoCheck = 0;
 async function checkUpdate(opts) {
@@ -216,6 +230,7 @@ async function checkUpdate(opts) {
   const newer = cmpVer(info.tag, app.getVersion()) > 0;
   if (newer) {
     pendingUpdate = { version: info.tag.replace(/^v/, ''), url: info.url };
+    latestAssets = Array.isArray(info.assets) ? info.assets : null;
     if (win && !win.isDestroyed()) win.webContents.send('update:available', pendingUpdate);
   }
   if (manual) {
@@ -246,8 +261,15 @@ ipcMain.handle('update:download', async (e, { version }) => {
   const ver = String(version || '').replace(/^v/, '');
   if (!/^\d+\.\d+\.\d+$/.test(ver)) return { ok: false, error: 'bad version' };
   const arch = process.arch === 'arm64' ? 'arm64' : 'x64';
-  const url = `https://github.com/alchaincyf/fanbox/releases/download/v${ver}/FanBox-${ver}-${arch}.dmg`;
-  const dest = path.join(app.getPath('downloads'), `FanBox-${ver}-${arch}.dmg`);
+  const name = `FanBox-${ver}-${arch}.dmg`;
+  // 这个 Release 没发当前架构的包时（x64 产物最后一次是 v2.5.0），别甩个必然 404 的地址给用户：
+  // 直接开发布页，让渲染层说明一句。资产清单没拿到（走了网页兜底）就不拦，照旧试下载
+  if (latestAssets && pendingUpdate && pendingUpdate.version === ver && !latestAssets.includes(name)) {
+    shell.openExternal(pendingUpdate.url || REL_PAGE);
+    return { ok: false, error: 'no-asset', arch };
+  }
+  const url = `https://github.com/alchaincyf/fanbox/releases/download/v${ver}/${name}`;
+  const dest = path.join(app.getPath('downloads'), name);
   const send = (m) => { if (win && !win.isDestroyed()) win.webContents.send('update:progress', m); };
   updDownloading = true;
   const tmp = dest + '.part';
@@ -311,10 +333,44 @@ function writeConfig(patch) {
   try { const c = readConfig(); Object.assign(c, patch); fs.mkdirSync(path.dirname(CONFIG), { recursive: true }); fs.writeFileSync(CONFIG, JSON.stringify(c, null, 2)); }
   catch { /* 写失败不致命，下次再写 */ }
 }
-let lidIntent = false; // 用户意图（菜单勾选），跨会话持久
+let lidIntent = false; // 用户意图（侧栏/菜单勾选），跨会话持久
 let lidActive = false; // 当前是否已对系统下达禁休眠
-let wechatStayAwake = false; // 「离开不待机」开关（微信 ClawBot 面板），跨会话持久
+let wechatStayAwake = false; // 「微信遥控不断线」开关，跨会话持久
 let wechatConnected = false; // 微信 ClawBot 当前是否连着（bridge 回调更新）
+
+// ---- agent 工作状态检测：前台不是裸 shell = 终端里有东西在跑（和微信 termControl 同一判据）----
+const BARE_SHELL = /^-?(zsh|bash|sh|fish|login)$/i;
+function termBusyAny() {
+  for (const p of terminals.values()) {
+    const proc = (p && p.process) || '';
+    if (proc && !BARE_SHELL.test(proc)) return true;
+  }
+  return false;
+}
+// 收工不立刻放行休眠：agent 工具调用间隙 / 刚跑完下一句还没起，留 2 分钟缓冲防误判
+const IDLE_GRACE_MS = 2 * 60 * 1000;
+let lastBusyAt = 0;
+let lidPoke = null; // 终端一有输出就尽快结算（1s 去抖），刚启动的 agent 不用等 30s 轮询才被护住
+function termsBusyRecently() {
+  if (termBusyAny()) { lastBusyAt = Date.now(); return true; }
+  return lidActive && Date.now() - lastBusyAt < IDLE_GRACE_MS;
+}
+
+// 电源状态汇总：渲染层侧栏开关 + 状态点都吃这一份
+function powerPayload() {
+  const busy = termBusyAny();
+  return {
+    ok: true, platform: process.platform,
+    lid: lidIntent, wechat: wechatStayAwake, active: lidActive,
+    busy, terms: terminals.size, wechatConnected,
+    // 分条「正在生效」判定，侧栏状态点直接用（lid 侧含收工缓冲期）
+    lidHolding: lidIntent && terminals.size > 0 && (busy || (lidActive && Date.now() - lastBusyAt < IDLE_GRACE_MS)),
+    wechatHolding: wechatStayAwake && wechatConnected,
+  };
+}
+function sendPower() {
+  if (win && !win.isDestroyed()) win.webContents.send('power:changed', powerPayload());
+}
 
 // 用 sudo -n（非交互）切换；sudoers 没装好就直接失败、绝不在后台弹密码
 function trySetDisableSleep(on) {
@@ -360,49 +416,58 @@ async function ensurePmsetRule() {
   return installSudoers();
 }
 
-// 按「意图 × 触发条件」结算系统状态，幂等。终端起落、微信连断、开关变化都调它。
-//  两条独立诉求 OR 起来：① 合盖继续跑（要有终端在跑）② 离开不待机（微信连着就保持唤醒，断开自动恢复）
+// 按「意图 × 触发条件」结算系统状态，幂等。终端起落、agent 忙闲轮询、微信连断、开关变化都调它。
+//  两条独立诉求 OR 起来：① 合盖继续干活（要有 agent 正在干活）② 微信遥控不断线（微信连着就保持唤醒，断开自动恢复）
 function refreshLidGuard() {
   if (process.platform !== 'darwin') return;
-  const want = (lidIntent && terminals.size > 0) || (wechatStayAwake && wechatConnected);
-  if (want === lidActive) return;
-  const ok = trySetDisableSleep(want);
-  if (want && !ok) { // 免密规则丢了，两个开关都退回关闭，别让用户以为还护着
-    lidIntent = false; wechatStayAwake = false;
-    writeConfig({ lidStayAwake: false, wechatStayAwake: false });
-    if (win && !win.isDestroyed()) win.webContents.send('wechat:power', { stayAwake: false, active: false });
+  const want = (lidIntent && terminals.size > 0 && termsBusyRecently()) || (wechatStayAwake && wechatConnected);
+  if (want !== lidActive) {
+    const ok = trySetDisableSleep(want);
+    if (want && !ok) { // 免密规则丢了，两个开关都退回关闭，别让用户以为还护着
+      lidIntent = false; wechatStayAwake = false;
+      writeConfig({ lidStayAwake: false, wechatStayAwake: false });
+    }
+    lidActive = want && ok;
+    buildMenu();
   }
-  lidActive = want && ok;
-  buildMenu();
+  sendPower();
 }
 
-// 菜单勾选/取消的入口
+// 侧栏开关 / 菜单勾选共用的入口
 async function setLidIntent(on) {
   console.log('[lid] setLidIntent called, on =', on);
-  if (process.platform !== 'darwin') return;
+  if (process.platform !== 'darwin') return { ok: false, error: 'macOS only' };
   if (on) {
     const choice = dialog.showMessageBoxSync(win && !win.isDestroyed() ? win : undefined, {
       type: 'warning', buttons: [M('开启', 'Enable'), M('取消', 'Cancel')], defaultId: 0, cancelId: 1,
-      message: M('合盖后继续运行', 'Keep running with lid closed'),
-      detail: M('开启后，只要还有终端会话在跑，合上盖子也不会休眠——agent 任务能接着干。\n\n注意：合盖期间持续耗电发热，建议接电源。终端全部退出或退出翻箱时自动恢复正常休眠。\n\n首次开启需输入一次管理员密码（装一条仅限电源设置的免密规则）。',
-        'While any terminal session is running, closing the lid won\'t sleep the Mac — your agent tasks keep going.\n\nNote: it keeps drawing power and heat while closed; stay plugged in. Normal sleep is restored once all terminals exit or you quit FanBox.\n\nFirst time needs your admin password once (installs a power-only passwordless rule).'),
+      message: M('Agent 干活时，合盖继续', 'Keep working with lid closed'),
+      detail: M('翻箱能看到每个终端窗口的工作状态。开启后：只要检测到有 agent 正在干活，合上盖子也不休眠，任务接着跑；所有终端都空闲约两分钟后，自动恢复正常休眠——不会让 Mac 一直不睡。\n\n注意：合盖期间持续耗电发热，建议接电源。\n\n首次开启需输入一次管理员密码（装一条仅限电源设置的免密规则）。',
+        'FanBox watches what each terminal is doing. When any agent is actively working, closing the lid won\'t sleep the Mac — the task keeps going. Once every terminal has been idle for ~2 minutes, normal sleep resumes automatically.\n\nNote: it keeps drawing power and heat while closed; stay plugged in.\n\nFirst time needs your admin password once (installs a power-only passwordless rule).'),
     });
     console.log('[lid] warning dialog choice =', choice, '(0=开启)');
-    if (choice !== 0) { buildMenu(); return; } // 取消 → 复位勾选
+    if (choice !== 0) { buildMenu(); sendPower(); return { ok: false, error: 'cancelled' }; } // 取消 → 复位勾选
     // 探针：能否免密 sudo（设 0 无害）。不行就装规则。
     const probe = trySetDisableSleep(false);
     console.log('[lid] sudo probe ok =', probe, '→', probe ? '已有免密规则' : '需安装');
     if (!probe) {
       const installed = await installSudoers();
       console.log('[lid] installSudoers result =', installed);
-      if (!installed) { buildMenu(); return; } // 装失败/取消 → 保持关闭
+      if (!installed) { buildMenu(); sendPower(); return { ok: false, error: 'setup-cancelled' }; } // 装失败/取消 → 保持关闭
     }
   }
-  lidIntent = on;
-  writeConfig({ lidStayAwake: on });
+  lidIntent = !!on;
+  writeConfig({ lidStayAwake: !!on });
   refreshLidGuard();
   buildMenu();
+  return { ok: true, on: lidIntent };
 }
+
+// 侧栏「离开电脑」两个开关的 IPC（微信开关的 handler 在下方微信段，要联动 bridge）
+ipcMain.handle('power:state', () => powerPayload());
+ipcMain.handle('power:setLid', async (e, { on } = {}) => {
+  const r = await setLidIntent(!!on);
+  return { ...powerPayload(), ...r };
+});
 
 // 原生菜单——关键是 Edit role，终端里的 ⌘C/⌘V 才生效
 function buildMenu() {
@@ -430,8 +495,8 @@ function buildMenu() {
       { type: 'separator' }, { role: 'resetZoom' }, { role: 'zoomIn' }, { role: 'zoomOut' },
       { type: 'separator' }, { role: 'togglefullscreen', label: M('全屏', 'Full Screen') },
       ...(isMac ? [{ type: 'separator' }, {
-        // 合盖后继续运行：仅在有终端跑着时真正生效（智能模式）；勾选状态反映用户意图
-        label: lidActive ? M('合盖后继续运行（生效中）', 'Keep running with lid closed (active)') : M('合盖后继续运行', 'Keep running with lid closed'),
+        // 合盖继续干活：仅在检测到 agent 正在干活时真正生效（智能模式）；勾选状态反映用户意图
+        label: lidActive ? M('合盖继续干活（生效中）', 'Keep working with lid closed (active)') : M('合盖继续干活', 'Keep working with lid closed'),
         type: 'checkbox', checked: lidIntent,
         click: (item) => { setLidIntent(item.checked); },
       }] : []),
@@ -538,7 +603,11 @@ ipcMain.handle('pty:spawn', (e, { id, cwd, cols, rows, theme }) => {
   // 走 login shell 把这些路径带进来。Windows 的 powershell 无此机制，保持空参数。
   const shellArgs = process.platform === 'win32' ? [] : ['-l'];
   // GUI 启动的 app 不继承 shell 的 locale，zsh 会把中文路径按字节转义成 \M-^@ 乱码 → 兜底 UTF-8
-  const env = { ...process.env, TERM: 'xterm-256color', FANBOX: '1' };
+  const env = {
+    ...process.env, TERM: 'xterm-256color', FANBOX: '1',
+    // 终端里的 agent 天生知道自己是几号窗口、控制接口在哪、门票是啥——skill 零配置（见 docs/12）
+    FANBOX_TERM_ID: id, FANBOX_CTL: `http://127.0.0.1:${PORT}/api/agent`, FANBOX_CTL_TOKEN: AGENT_TOKEN,
+  };
   if (!/UTF-8/i.test(env.LC_ALL || env.LC_CTYPE || env.LANG || '')) env.LANG = 'zh_CN.UTF-8';
   let p;
   try {
@@ -555,13 +624,21 @@ ipcMain.handle('pty:spawn', (e, { id, cwd, cols, rows, theme }) => {
   recStart(id, { cols, rows, cwd: startCwd, theme });
   p.onData((data) => {
     if (win && !win.isDestroyed()) win.webContents.send('pty:data', { id, data });
+    // 开关开着但还没生效 → 有输出说明可能刚开工，尽快结算电源守卫（1s 去抖）
+    if (lidIntent && !lidActive && !lidPoke) lidPoke = setTimeout(() => { lidPoke = null; refreshLidGuard(); }, 1000);
     recEvent(id, 'o', data);
-    const tail = ((termTails.get(id) || '') + data.replace(/\x1b\[[0-9;?]*[A-Za-z]|\x1b[()][AB0]|\r/g, '')).slice(-4000);
-    termTails.set(id, tail); // 留最后 ~4KB，给微信 agent 看「最近输出」
+    const stripped = data.replace(/\x1b\[[0-9;?]*[A-Za-z]|\x1b[()][AB0]|\r/g, '');
+    termTails.set(id, ((termTails.get(id) || '') + stripped).slice(-4000)); // 留最后 ~4KB，给微信 agent 看「最近输出」
+    termBufs.set(id, ((termBufs.get(id) || '') + stripped).slice(-200000)); // 大缓冲给 /api/agent/read
+    termLastOut.set(id, Date.now());
+    const ws = termWaiters.get(id);
+    if (ws) for (const fn of ws) { try { fn(stripped); } catch { /* 单个 waiter 异常不连累别人 */ } }
   });
   p.onExit(({ exitCode }) => {
     terminals.delete(id);
     termTails.delete(id);
+    termBufs.delete(id);
+    termLastOut.delete(id);
     refreshLidGuard(); // 最后一个终端退出即恢复休眠
     recStop(id);
     if (win && !win.isDestroyed()) win.webContents.send('pty:exit', { id, exitCode });
@@ -572,6 +649,33 @@ ipcMain.handle('pty:spawn', (e, { id, cwd, cols, rows, theme }) => {
 ipcMain.handle('clip:image', (e, { path: p }) => {
   try { const img = nativeImage.createFromPath(p); if (img.isEmpty()) return { ok: false, error: '不是可读图片' }; clipboard.writeImage(img); return { ok: true }; }
   catch (err) { return { ok: false, error: err.message }; }
+});
+// 终端粘贴：⌘V 时问一句剪贴板里到底是什么。
+// 文字照常回文字；网页/微信里复制的图片没有路径，落盘临时目录换一个路径回去——
+// 终端里的 agent 只认路径，图片本体塞不进 PTY。访达里 ⌘C 的文件同理，直接给真实路径。
+ipcMain.handle('clip:read', () => {
+  try {
+    const text = clipboard.readText();
+    if (text) return { kind: 'text', text }; // 文字优先：表格类应用同时放文字和位图，别把复制的表格粘成图片路径
+    const fileUrl = process.platform === 'darwin' ? clipboard.read('public.file-url') : '';
+    if (fileUrl) {
+      try {
+        const fp = decodeURIComponent(new URL(fileUrl).pathname);
+        if (fs.existsSync(fp)) return { kind: 'file', path: fp };
+      } catch { /* 不是合法 file:// 就当没有 */ }
+    }
+    const img = clipboard.readImage();
+    if (!img.isEmpty()) {
+      const dir = path.join(app.getPath('temp'), 'fanbox-drops');
+      fs.mkdirSync(dir, { recursive: true });
+      const d = new Date(), z = (x) => String(x).padStart(2, '0');
+      const name = `粘贴图片-${d.getFullYear()}${z(d.getMonth() + 1)}${z(d.getDate())}-${z(d.getHours())}${z(d.getMinutes())}${z(d.getSeconds())}.png`;
+      const dest = path.join(dir, name);
+      fs.writeFileSync(dest, img.toPNG());
+      return { kind: 'image', path: dest };
+    }
+    return { kind: 'empty' };
+  } catch (err) { return { kind: 'error', error: err.message }; }
 });
 ipcMain.handle('clip:file', (e, { path: p }) => new Promise((resolve) => {
   const { execFile } = require('child_process');
@@ -623,6 +727,112 @@ ipcMain.handle('drop:copy-into', (e, { srcPath, dir }) => {
 ipcMain.on('pty:input', (e, { id, data }) => { const p = terminals.get(id); if (p) { p.write(data); recEvent(id, 'i', data); } });
 ipcMain.on('pty:resize', (e, { id, cols, rows }) => { const p = terminals.get(id); if (p) { try { p.resize(cols, rows); } catch { /* */ } recEvent(id, 'r', `${cols}x${rows}`); } });
 ipcMain.on('pty:kill', (e, { id }) => { const p = terminals.get(id); if (p) { try { p.kill(); } catch { /* */ } terminals.delete(id); refreshLidGuard(); recStop(id); } });
+
+// ---------- Agent 控制接口：把跨终端感知/控制能力开成本机 HTTP（server.js 的 /api/agent/* 调这里）----------
+// 让跑在翻箱终端里的 agent 指挥兄弟窗口：列表/读屏/输入/开窗/等待/关闭。安全模型与接口规范见 docs/12。
+const BARE_SHELL_RE = /^-?(zsh|bash|sh|fish|login)$/i;
+let agentReqSeq = 0;
+const agentCreateWaiters = new Map(); // reqId -> resolve（渲染进程建 tab 的回执）
+
+function agentTouch(id, action) { // 被 agent 控制的 tab 在界面上闪 ⚡：审计 + 围观
+  if (win && !win.isDestroyed()) win.webContents.send('agent:touch', { id, action });
+}
+async function agentList() {
+  const arr = [];
+  for (const [id, p] of terminals) {
+    const proc = (p && p.process) || '';
+    const cwd = await termCwdByPid(p && p.pid);
+    arr.push({
+      id, cwd, name: cwd ? path.basename(cwd) : '', proc,
+      busy: !!proc && !BARE_SHELL_RE.test(proc),
+      tail: (termTails.get(id) || '').slice(-500),
+    });
+  }
+  return { ok: true, terminals: arr };
+}
+function agentRead(id, lines) {
+  if (!terminals.has(id)) return { ok: false, error: 'no such terminal' };
+  const n = Math.max(1, Math.min(2000, lines || 200));
+  return { ok: true, id, text: (termBufs.get(id) || '').split('\n').slice(-n).join('\n') };
+}
+function agentSend(id, text, opts = {}) {
+  const p = terminals.get(id);
+  if (!p) return { ok: false, error: 'no such terminal' };
+  let t = String(text == null ? '' : text);
+  if (opts.paste) t = '\x1b[200~' + t + '\x1b[201~'; // bracketed paste：多行文本整块进 TUI，不被逐行提交
+  else t = t.replace(/\r\n|\n/g, '\r'); // 换行 → 回车才会真正提交
+  if (opts.submit !== false && !/\r$/.test(t)) t += '\r';
+  try { p.write(t); recEvent(id, 'i', t); agentTouch(id, 'send'); return { ok: true }; }
+  catch (e) { return { ok: false, error: String(e && e.message || e) }; }
+}
+function agentCreate(opts = {}) {
+  return new Promise((resolve) => {
+    if (!win || win.isDestroyed()) return resolve({ ok: false, error: 'no window' });
+    const reqId = 'ac' + (++agentReqSeq);
+    agentCreateWaiters.set(reqId, resolve);
+    win.webContents.send('agent:term-create', { reqId, cwd: typeof opts.cwd === 'string' ? opts.cwd : '' });
+    setTimeout(() => { if (agentCreateWaiters.delete(reqId)) resolve({ ok: false, error: 'renderer timeout' }); }, 10000);
+  }).then(async (r) => {
+    if (!r.ok) return r;
+    agentTouch(r.id, 'create');
+    if (!opts.autorun) return r;
+    // 等 shell 就绪（有过输出且静默 ≥400ms）再敲命令，login shell 初始化慢也不怕
+    const t0 = Date.now();
+    await new Promise((done) => {
+      const iv = setInterval(() => {
+        const last = termLastOut.get(r.id);
+        if ((last && Date.now() - last >= 400) || Date.now() - t0 > 8000) { clearInterval(iv); done(); }
+      }, 100);
+    });
+    const s = agentSend(r.id, String(opts.autorun));
+    return { ...r, autorun: s.ok };
+  });
+}
+ipcMain.on('agent:term-created', (e, { reqId, ok, id, error } = {}) => {
+  const resolve = agentCreateWaiters.get(reqId);
+  if (!resolve) return;
+  agentCreateWaiters.delete(reqId);
+  resolve(ok && id ? { ok: true, id } : { ok: false, error: error || 'create failed' });
+});
+function agentWait(id, opts = {}) {
+  return new Promise((resolve) => {
+    if (!terminals.has(id)) return resolve({ ok: false, error: 'no such terminal' });
+    let re = null;
+    if (opts.until) {
+      try { re = new RegExp(String(opts.until), 'm'); }
+      catch { return resolve({ ok: false, error: 'bad regex' }); }
+    }
+    const idleMs = Math.max(500, Math.min(30000, Number(opts.idleMs) || 2000));
+    const timeoutMs = Math.max(1000, Math.min(240000, Number(opts.timeoutMs) || 60000)); // 240s < node requestTimeout(300s)
+    const quietMode = opts.idle === 'quiet'; // quiet：只看输出静默（TUI 回答完）；默认还要求前台回到裸 shell
+    const started = Date.now();
+    let acc = ''; // 只累计 wait 开始后的新输出，正则也只匹配这段
+    let set = termWaiters.get(id);
+    if (!set) termWaiters.set(id, set = new Set());
+    const finish = (extra) => {
+      clearInterval(iv); set.delete(onData);
+      resolve({ elapsed: Date.now() - started, output: acc.slice(-8000), ...extra });
+    };
+    const onData = (s) => { acc = (acc + s).slice(-64000); if (re && re.test(acc)) finish({ ok: true, matched: true }); };
+    set.add(onData);
+    const iv = setInterval(() => {
+      const p = terminals.get(id);
+      if (!p) return finish({ ok: true, exited: true });
+      if (Date.now() - started >= timeoutMs) return finish({ ok: false, timeout: true });
+      if (re) return; // until 模式只认正则
+      if (Date.now() - (termLastOut.get(id) || started) < idleMs) return;
+      const proc = p.process || '';
+      if (quietMode || !proc || BARE_SHELL_RE.test(proc)) finish({ ok: true, idle: true });
+    }, 200);
+  });
+}
+function agentKill(id) {
+  const p = terminals.get(id);
+  if (!p) return { ok: false, error: 'no such terminal' };
+  try { p.kill(); agentTouch(id, 'kill'); return { ok: true }; }
+  catch (e) { return { ok: false, error: String(e && e.message || e) }; }
+}
+global.__fanboxAgent = { token: AGENT_TOKEN, list: agentList, read: agentRead, send: agentSend, create: agentCreate, wait: agentWait, kill: agentKill };
 
 // ---------- 录制文件管理 IPC ----------
 // 列表：读每个 .cast 的头行拿元信息 + 文件大小/时长（末事件时间），按新→旧。失败的文件跳过不报错。
@@ -842,8 +1052,8 @@ ipcMain.handle('wechat:disconnect', async () => { ensureWechat(); return wechatB
 ipcMain.handle('wechat:cancel', () => ({ ok: true }));
 ipcMain.handle('wechat:check', async () => { ensureWechat(); return wechatBridge.check(); }); // 主动探活，返回 { state }
 
-// 「离开不待机」开关：开启时（首次需管理员密码装免密规则）+ 微信连着 → 禁休眠，息屏/合盖也能远程操控
-ipcMain.handle('wechat:setStayAwake', async (e, { on } = {}) => {
+// 「微信遥控不断线」开关：开启时（首次需管理员密码装免密规则）+ 微信连着 → 禁休眠，息屏/合盖也能远程操控
+ipcMain.handle('power:setWechat', async (e, { on } = {}) => {
   ensureWechat();
   if (process.platform !== 'darwin') return { ok: false, error: 'macOS only' };
   if (on) {
@@ -853,17 +1063,16 @@ ipcMain.handle('wechat:setStayAwake', async (e, { on } = {}) => {
       detail: M('开启后，只要微信 ClawBot 还连着，合盖 / 息屏也不休眠——你能一直用手机微信遥控本机的 Claude Code / Codex。\n\n注意：持续耗电发热，建议接电源。断开微信、或关掉这个开关，自动恢复正常休眠。\n\n首次开启需输入一次管理员密码（装一条仅限电源设置的免密规则）。',
         'While WeChat ClawBot stays connected, closing the lid / screen off won\'t sleep the Mac — you can keep remote-controlling Claude Code / Codex from your phone.\n\nNote: it keeps drawing power and heat; stay plugged in. Disconnecting WeChat or turning this off restores normal sleep.\n\nFirst time needs your admin password once (installs a power-only passwordless rule).'),
     });
-    if (choice !== 0) return { ok: false, error: 'cancelled', on: wechatStayAwake };
+    if (choice !== 0) return { ...powerPayload(), ok: false, error: 'cancelled' };
     const ruleOk = await ensurePmsetRule();
-    if (!ruleOk) return { ok: false, error: 'setup-cancelled', on: wechatStayAwake };
+    if (!ruleOk) return { ...powerPayload(), ok: false, error: 'setup-cancelled' };
   }
   wechatStayAwake = !!on;
   writeConfig({ wechatStayAwake });
   try { wechatConnected = wechatBridge.isConnected(); } catch { /* */ }
   refreshLidGuard();
-  return { ok: true, on: wechatStayAwake, active: lidActive, connected: wechatConnected };
+  return { ...powerPayload(), ok: true, on: wechatStayAwake };
 });
-ipcMain.handle('wechat:powerState', () => ({ ok: true, stayAwake: wechatStayAwake, active: lidActive, platform: process.platform }));
 
 // ---------- 文件监听（agent 改文件 → 自动刷新 + 跨项目变更收件箱）----------
 // 多目录监听：浏览目录 + 每个终端会话所在的项目目录。一下午开多个项目跑 agent 时，
