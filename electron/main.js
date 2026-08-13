@@ -9,6 +9,8 @@ const { app, BrowserWindow, ipcMain, shell, nativeImage, Menu, clipboard, dialog
 const path = require('path');
 const os = require('os');
 const fs = require('fs');
+const { version: APP_VERSION } = require('../package.json');
+const APP_TITLE = `FanBox v${APP_VERSION}`;
 
 // 复用现有后端：require 即 listen 127.0.0.1:PORT，不自动开浏览器
 process.env.FANBOX_NO_OPEN = '1';
@@ -53,6 +55,7 @@ function createWindow() {
   win = new BrowserWindow({
     width: b.width, height: b.height, x: b.x, y: b.y,
     minWidth: 920, minHeight: 600,
+    title: APP_TITLE,
     titleBarStyle: 'hiddenInset',
     backgroundColor: '#0b0c0a',
     vibrancy: 'sidebar',
@@ -62,6 +65,12 @@ function createWindow() {
       contextIsolation: true,
       nodeIntegration: false,
     },
+  });
+  // 页面加载时 HTML 的 <title> 会覆盖 BrowserWindow 的初始 title，导致版本号闪一下就消失。
+  // 标题由桌面主进程统一管理，忽略渲染页发起的覆盖。
+  win.webContents.on('page-title-updated', (event) => {
+    event.preventDefault();
+    win.setTitle(APP_TITLE);
   });
   // 拖动/缩放后防抖记忆，关窗再存一次兜底
   let bt = null;
@@ -600,8 +609,19 @@ ipcMain.handle('pty:spawn', (e, { id, cwd, cols, rows, theme }) => {
   const startCwd = cwd && fs.existsSync(cwd) ? cwd : os.homedir();
   // login shell（-l）：GUI 启动的进程只继承精简 PATH，不读 .zprofile/.zlogin，
   // 用户在那里配的 Homebrew/nvm/npm 全局路径（claude 等）就丢了 → 「普通终端能找到、fanbox 找不到」。
-  // 走 login shell 把这些路径带进来。Windows 的 powershell 无此机制，保持空参数。
-  const shellArgs = process.platform === 'win32' ? [] : ['-l'];
+  // 走 login shell 把这些路径带进来。Windows 没有 lsof，无法像 macOS 一样轮询
+  // PTY 子进程 cwd；因此给 PowerShell 的 prompt 包一层，每次回到提示符都发一个 OSC 7
+  // 工作目录事件。它不改用户的 prompt 内容，只在前面附加不可见的终端控制序列。
+  const shellArgs = process.platform === 'win32'
+    ? ['-NoExit', '-Command', [
+      '$global:__fanboxPrompt = (Get-Command prompt -CommandType Function).ScriptBlock',
+      'function global:prompt {',
+      "  $p = (Get-Location).Path -replace '\\\\', '/'",
+      "  [Console]::Write(\"$([char]27)]7;file:///$p$([char]7)\")",
+      '  & $global:__fanboxPrompt',
+      '}',
+    ].join('; ')]
+    : ['-l'];
   // GUI 启动的 app 不继承 shell 的 locale，zsh 会把中文路径按字节转义成 \M-^@ 乱码 → 兜底 UTF-8
   const env = {
     ...process.env, TERM: 'xterm-256color', FANBOX: '1',

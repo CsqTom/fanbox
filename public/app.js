@@ -3387,6 +3387,26 @@ const term = {
       }));
     } catch { /* */ }
   },
+  // Windows 没有 lsof，主进程会让 PowerShell 在每次 prompt 前发 OSC 7（当前目录）。
+  // PTY 输出可能任意分片，保留尾巴再解析，确保 cd 后立刻把真实目录写入恢复快照。
+  captureCwdFromOutput(s, data) {
+    if (!s || state.platform !== 'win32' || !data) return;
+    const text = (s._osc7Tail || '') + data;
+    s._osc7Tail = text.slice(-4096);
+    const re = /\x1b\]7;file:\/\/\/([^\x07\x1b]*)(?:\x07|\x1b\\)/g;
+    let m;
+    while ((m = re.exec(text))) {
+      let cwd = m[1];
+      try { cwd = decodeURIComponent(cwd); } catch { /* 不是标准转义时原样使用 */ }
+      cwd = cwd.replace(/\//g, '\\\\');
+      if (/^[A-Za-z]:\\/.test(cwd) && cwd !== s.cwd) {
+        s.cwd = cwd;
+        s.title = baseOf(cwd) || s.title;
+        this.renderTabs();
+        renderBreadcrumb();
+      }
+    }
+  },
   // 下次打开时还原上面的快照：进程不复活（shell 全新），但打开就是你离开时的格局
   async restore(saved) {
     $('#terminal-panel').classList.remove('hidden');
@@ -5039,7 +5059,7 @@ function igniteCard(top, count) {
 
 // pty 数据回流（全局一次）
 if (window.fanboxPty) {
-  window.fanboxPty.onData(({ id, data }) => { const s = term.sessions.find((x) => x.id === id); if (s) { s.xterm.write(data); term.markBusy(s); } });
+  window.fanboxPty.onData(({ id, data }) => { const s = term.sessions.find((x) => x.id === id); if (s) { term.captureCwdFromOutput(s, data); s.xterm.write(data); term.markBusy(s); } });
   window.fanboxPty.onExit(({ id }) => {
     const s = term.sessions.find((x) => x.id === id);
     if (s) {

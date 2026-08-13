@@ -193,10 +193,12 @@ Open `http://localhost:4567`. Zero dependencies, zero build — clone and run. T
 ```bash
 npm install
 npm run app          # electron . 启动完整桌面版 / full desktop app
-npm run dist         # 打包签名 .dmg（产物在 dist/，不入 git）/ build & sign the .dmg (output in dist/)
+npm run dist         # 打包当前系统的安装包（产物在 dist/，不入 git）/ package for the current OS
+npm run dist:mac     # 在 macOS 上打包并签名 arm64 .dmg / signed arm64 .dmg on macOS
+npm run dist:win     # 在 Windows 上打包 Windows 安装包 / Windows installer on Windows
 ```
 
-> 打包遇到 Electron 下载被墙：`ELECTRON_MIRROR="https://registry.npmmirror.com/-/binary/electron/" npm run dist`
+> 打包遇到 Electron 下载被墙：macOS/Linux 用 `ELECTRON_MIRROR="https://registry.npmmirror.com/-/binary/electron/" npm run dist`；Windows PowerShell 用 `$env:ELECTRON_MIRROR="https://registry.npmmirror.com/-/binary/electron/"; npm run dist`。
 
 ## Shortcuts · 快捷键
 

@@ -3,7 +3,7 @@
 # 📦 FanBox
 ## windows
 ```
-npx electron-builder --win
+npm run dist
 ```
 
 ## windows新的需求
