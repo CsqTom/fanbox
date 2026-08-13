@@ -1155,6 +1155,8 @@ kbd {
 .agents-pop .ap-ic svg, .agents-pop .ap-ic img { width: 15px; height: 15px; display: block; }
 .agents-pop .ap-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agents-pop .ap-flag { font-size: 11px; color: var(--yellow); cursor: copy; flex: none; }
+.agents-pop .ap-edit { flex: none; border: 1px solid var(--border); border-radius: 5px; padding: 2px 6px; background: transparent; color: var(--text-dim); font: inherit; font-size: 11px; cursor: pointer; }
+.agents-pop .ap-edit:hover { color: var(--accent); border-color: var(--accent); }
 .agents-pop .ap-foot { padding: 8px 12px; font-size: 11px; color: var(--text-dim); border-top: 1px solid var(--border); line-height: 1.7; }
 
 #xterm-host { flex: 1; position: relative; min-height: 0; overflow: hidden; background: var(--bg); }

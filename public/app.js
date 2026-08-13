@@ -2656,6 +2656,14 @@ async function loadAgents() {
   } catch { agentState.enabled = null; agentState.custom = []; }
 }
 
+async function saveAgentsConfig() {
+  const r = await apiPost('/api/agents', {
+    enabled: agentState.enabled || [],
+    custom: agentState.custom,
+  });
+  if (!r || !r.ok) throw new Error((r && r.error) || '保存失败');
+}
+
 // 生效的按钮清单：面板勾选管显隐；custom 同 id 只覆盖 label/cmd，不影响显隐；custom 新 id 恒显示追加在后
 function activeAgents() {
   const on = new Set(agentState.enabled || AGENT_DEFAULTS);
@@ -2701,6 +2709,7 @@ const agentsPop = {
           <span class="ap-ic" data-ic="${a.id}"></span>
           <span class="ap-name">${escapeHtml(a.label)}</span>
           <span class="ap-flag" data-flag="${a.id}"></span>
+          <button class="ap-edit" type="button" data-edit="${a.id}" title="编辑启动命令和参数">编辑</button>
         </label>`).join('')}</div>
       <div class="ap-head ap-sub">终端渲染</div>
       <label class="ap-row" data-webgl title="长时间中文输出偶发乱码时可关掉：改用兼容渲染（DOM），立即生效，稍慢但稳">
@@ -2728,7 +2737,23 @@ const agentsPop = {
         const ids = [...pop.querySelectorAll('.ap-list .ap-row input:checked')].map((x) => x.closest('.ap-row').dataset.id);
         agentState.enabled = ids.length ? ids : null;
         renderAgentButtons();
-        try { await apiPost('/api/agents', { enabled: ids }); } catch { toast('保存失败', true); }
+        try { await saveAgentsConfig(); } catch { toast('保存失败', true); }
+      };
+    });
+    pop.querySelectorAll('[data-edit]').forEach((btn) => {
+      btn.onclick = async (ev) => {
+        ev.preventDefault();
+        ev.stopPropagation();
+        const agent = AGENT_REGISTRY.find((a) => a.id === btn.dataset.edit);
+        if (!agent) return;
+        const old = agentState.custom.find((a) => a.id === agent.id);
+        const cmd = await inputDialog(`${agent.label} 启动命令`, old?.cmd || agent.cmd, '例如：codex --full-auto');
+        if (!cmd) return;
+        const next = { ...(old || {}), id: agent.id, cmd };
+        agentState.custom = [...agentState.custom.filter((a) => a.id !== agent.id), next];
+        renderAgentButtons();
+        try { await saveAgentsConfig(); toast(`${agent.label} 启动参数已保存`); }
+        catch { toast('保存失败', true); }
       };
     });
     this._out = (ev) => { if (!pop.contains(ev.target) && !$('#agent-config').contains(ev.target)) this.close(); };

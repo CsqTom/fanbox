@@ -2669,8 +2669,21 @@ const server = http.createServer(async (req, res) => {
         const b = await readBody(req);
         const enabled = (Array.isArray(b.enabled) ? b.enabled : [])
           .filter((x) => typeof x === 'string' && /^[\w-]{1,32}$/.test(x)).slice(0, 32);
-        await updateConfig((c) => { c.enabledAgents = enabled; });
-        return sendJSON(res, 200, { ok: true, enabled });
+        const hasCustom = Array.isArray(b.custom);
+        const custom = hasCustom ? b.custom
+          .filter((a) => a && typeof a.id === 'string' && /^[\w-]{1,32}$/.test(a.id)
+            && typeof a.cmd === 'string' && a.cmd.trim() && a.cmd.trim().length <= 2000)
+          .slice(0, 32)
+          .map((a) => ({
+            id: a.id,
+            cmd: a.cmd.trim(),
+            ...(typeof a.label === 'string' && a.label.trim() ? { label: a.label.trim().slice(0, 80) } : {}),
+          })) : null;
+        await updateConfig((c) => {
+          c.enabledAgents = enabled;
+          if (custom) c.agents = custom;
+        });
+        return sendJSON(res, 200, { ok: true, enabled, ...(custom ? { custom } : {}) });
       }
       const cfg = await readConfig();
       const custom = (Array.isArray(cfg.agents) ? cfg.agents : [])
