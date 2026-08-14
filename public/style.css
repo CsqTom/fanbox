@@ -499,7 +499,19 @@ kbd {
 .follow-narration .fn-dot.live { background: var(--accent); animation: livePulse 1.1s ease-in-out infinite; }
 .follow-narration .fn-sep { color: var(--text-faint); margin: 0 1px; }
 .follow-narration .fn-term { color: var(--accent); font-weight: 600; overflow: hidden; text-overflow: ellipsis; }
-.preview-body { flex: 1; overflow: auto; padding: 16px; }
+.preview-body { flex: 1 1 0; min-height: 0; min-width: 0; overflow: auto; padding: 16px; }
+.preview-body:has(> .mona-host),
+.preview-body:has(> .read-host),
+.preview-body:has(> .crepe-host),
+.preview-body:has(> .typeset-host) { display: flex; flex-direction: column; overflow: hidden; }
+.preview-body:has(> .mona-host) > .editor-bar,
+.preview-body:has(> .read-host) > .editor-bar,
+.preview-body:has(> .crepe-host) > .editor-bar,
+.preview-body:has(> .typeset-host) > .editor-bar { flex: 0 0 auto; }
+.preview-body:has(> .mona-host) > .mona-host { flex: 1 1 0; height: auto; min-height: 0; }
+.preview-body:has(> .read-host) > .read-host,
+.preview-body:has(> .crepe-host) > .crepe-host,
+.preview-body:has(> .typeset-host) > .typeset-host { flex: 1 1 0; height: auto; min-height: 0; max-height: none; }
 .preview-body img, .preview-body video { max-width: 100%; border-radius: 8px; }
 .preview-body audio { width: 100%; }
 .preview-body pre { font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12.5px; line-height: 1.6; white-space: pre-wrap; word-break: break-word; }
@@ -801,7 +813,7 @@ kbd {
 }
 /* md 只读阅读体：和编辑器同一块地界，滚动自己管 */
 .read-host {
-  height: calc(100vh - 184px); min-height: 360px; overflow: auto;
+  flex: 1 1 0; height: auto; min-height: 0; overflow: auto;
   border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg);
   padding: 22px 26px; box-sizing: border-box; animation: edIn 0.18s ease;
 }
@@ -810,7 +822,7 @@ kbd {
 /* 排版档：文章按主题自带的白底/米底铺在深色工作区上，像一张放在桌面上的纸。
    内部一律用内联样式（要粘到公众号），皮肤的 CSS 变量在这里一概不参与 */
 .typeset-host {
-  height: calc(100vh - 184px); min-height: 360px; overflow: auto;
+  flex: 1 1 0; height: auto; min-height: 0; overflow: auto;
   border: 1px solid var(--border); border-radius: var(--radius);
   background: var(--bg-3); padding: 20px; box-sizing: border-box; animation: edIn 0.18s ease;
 }
@@ -832,14 +844,14 @@ kbd {
 .editor-area:focus { outline: none; border-color: var(--accent); }
 /* Monaco 宿主：占满预览区可用高度，圆角裁掉内部直角 */
 .mona-host {
-  width: 100%; height: calc(100vh - 184px); min-height: 360px;
+  width: 100%; flex: 1 1 0; height: auto; min-height: 0;
   border: 1px solid var(--border); border-radius: var(--radius); overflow: hidden;
 }
 .mona-host .monaco-editor, .mona-host .monaco-editor .overflow-guard { border-radius: var(--radius); }
 
 /* Milkdown Crepe 所见即所得编辑器宿主：随皮肤变量呼吸 */
 .crepe-host {
-  height: calc(100vh - 184px); min-height: 360px; overflow: auto;
+  flex: 1 1 0; height: auto; min-height: 0; overflow: auto;
   border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg);
 }
 .crepe-host .milkdown {
