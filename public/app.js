@@ -3029,6 +3029,7 @@ const player = {
   xterm: null, raw: [], timeline: [], duration: 0, currentTime: 0, cursor: 0,
   playing: false, _raf: 0, _wallStart: 0, _host: null, _canvasOk: false,
   initCols: 80, initRows: 24, cols: 80, rows: 24, current: null, _wired: false,
+  listItems: [], selectedPaths: new Set(),
   opts: { idleCap: 1, target: 60, speed: 1 },
 
   async open() {
@@ -3037,6 +3038,7 @@ const player = {
     if (!ov.classList.contains('hidden')) return; // 已打开，别重复绑监听（否则 keydown/resize 泄漏）
     ov.classList.remove('hidden');
     this._host = $('#replay-host');
+    this.selectedPaths.clear();
     if (!this._wired) this.wire();
     this._onKey = (e) => {
       if (e.key === 'Escape') { e.preventDefault(); this.close(); }
@@ -3072,13 +3074,35 @@ const player = {
     $('#rp-target').addEventListener('change', (e) => { this.opts.target = e.target.value ? parseFloat(e.target.value) : null; this.recompute(); this.seekTo(this.firstAt); });
     $('#rp-speed').addEventListener('change', (e) => { this.opts.speed = parseFloat(e.target.value); this.recompute(); this.seekTo(this.firstAt); });
     $('#rp-export').onclick = () => this.exportVideo();
+    $('#rp-select-all').onchange = (e) => {
+      if (e.target.checked) this.listItems.forEach((it) => this.selectedPaths.add(it.path));
+      else this.selectedPaths.clear();
+      this.renderList();
+    };
+    $('#rp-delete-selected').onclick = () => this.deleteItems([...this.selectedPaths]);
   },
   async loadList() {
     const box = $('#replay-list');
-    if (!window.fanboxRec) { box.innerHTML = '<div class="replay-empty-list">录像功能仅在桌面 App 内可用。</div>'; return; }
+    const actions = $('#replay-list-actions');
+    if (!window.fanboxRec) { this.listItems = []; actions.classList.add('hidden'); box.innerHTML = '<div class="replay-empty-list">录像功能仅在桌面 App 内可用。</div>'; return; }
     const r = await window.fanboxRec.list().catch(() => null);
-    const items = (r && r.items) || [];
+    this.listItems = (r && r.items) || [];
+    const validPaths = new Set(this.listItems.map((it) => it.path));
+    this.selectedPaths.forEach((p) => { if (!validPaths.has(p)) this.selectedPaths.delete(p); });
+    actions.classList.toggle('hidden', !this.listItems.length);
+    this.renderList();
+  },
+  renderList() {
+    const box = $('#replay-list');
+    const items = this.listItems;
     if (!items.length) { box.innerHTML = '<div class="replay-empty-list">还没有录像。<br>打开一个终端跑跑 agent，<br>这里会自动出现黑匣子。</div>'; return; }
+    const all = $('#rp-select-all');
+    const del = $('#rp-delete-selected');
+    const count = this.selectedPaths.size;
+    all.checked = count === items.length;
+    all.indeterminate = count > 0 && count < items.length;
+    del.disabled = !count;
+    del.textContent = count ? `删除 (${count})` : '删除';
     box.innerHTML = '';
     items.forEach((it) => {
       const el = document.createElement('div');
@@ -3086,12 +3110,33 @@ const player = {
       const when = new Date(it.startedAt || it.mtime);
       const title = (it.cwd ? baseOf(it.cwd) : '') || it.name.replace(/\.cast$/, '');
       const dur = it.duration ? fmtDur(it.duration) + ' · ' : '';
-      el.innerHTML = `<div class="rp-item-top">${it.recording ? '<span class="rp-dot-live" title="正在录"></span>' : ''}<span>${escapeHtml(title)}</span><span class="rp-item-del" title="删除">✕</span></div>`
+      el.innerHTML = `<div class="rp-item-top"><input class="rp-item-check" type="checkbox" aria-label="选择 ${escapeHtml(title)}" ${this.selectedPaths.has(it.path) ? 'checked' : ''}>${it.recording ? '<span class="rp-dot-live" title="正在录"></span>' : ''}<span class="rp-item-title">${escapeHtml(title)}</span><button class="rp-item-del" type="button" title="删除">✕</button></div>`
         + `<div class="rp-item-sub">${dur}${when.toLocaleString('zh-CN', { month: 'numeric', day: 'numeric', hour: '2-digit', minute: '2-digit' })} · ${fmtSize(it.size)}</div>`;
-      el.querySelector('.rp-item-del').onclick = async (ev) => { ev.stopPropagation(); if (await confirmDialog('删除这段录像？')) { await window.fanboxRec.remove(it.path); this.loadList(); } };
+      const check = el.querySelector('.rp-item-check');
+      check.onclick = (ev) => ev.stopPropagation();
+      check.onchange = () => { if (check.checked) this.selectedPaths.add(it.path); else this.selectedPaths.delete(it.path); this.renderList(); };
+      el.querySelector('.rp-item-del').onclick = (ev) => { ev.stopPropagation(); this.deleteItems([it.path]); };
       el.onclick = () => this.select(it);
       box.appendChild(el);
     });
+  },
+  async deleteItems(paths) {
+    const unique = [...new Set(paths)].filter(Boolean);
+    if (!unique.length || !window.fanboxRec) return;
+    const label = unique.length === 1 ? '删除这段录像？' : `删除选中的 ${unique.length} 段录像？`;
+    if (!await confirmDialog(label)) return;
+    const results = await Promise.all(unique.map(async (p) => ({ path: p, result: await window.fanboxRec.remove(p).catch(() => null) })));
+    const deleted = results.filter(({ result }) => result && result.ok).map(({ path: p }) => p);
+    if (deleted.length !== unique.length) toast(`已删除 ${deleted.length} 段，另有 ${unique.length - deleted.length} 段删除失败`, true);
+    const deletedPaths = new Set(deleted);
+    deleted.forEach((p) => this.selectedPaths.delete(p));
+    if (this.current && deletedPaths.has(this.current.path)) {
+      this.pause(); this.teardownTerm(); this.current = null; this.raw = []; this.timeline = []; this.duration = 0; this.currentTime = 0;
+      $('#replay-empty').style.display = '';
+      $('#replay-controls').classList.add('hidden');
+    }
+    await this.loadList();
+    this.refreshHint();
   },
   async select(it) {
     if (this._exporting) { toast('导出进行中，请稍候…', true); return; } // 导出中切换会绑错画布产坏文件

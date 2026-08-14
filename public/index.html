@@ -169,7 +169,13 @@
         <button id="replay-close" title="关闭 (Esc)">✕</button>
       </header>
       <div class="replay-body">
-        <aside class="replay-list" id="replay-list"></aside>
+        <aside class="replay-list">
+          <div class="replay-list-actions" id="replay-list-actions">
+            <label class="rp-select-all"><input id="rp-select-all" type="checkbox" /> 全选</label>
+            <button id="rp-delete-selected" type="button" disabled>删除</button>
+          </div>
+          <div id="replay-list"></div>
+        </aside>
         <div class="replay-stage">
           <div class="replay-screen" id="replay-screen">
             <div id="replay-host" class="replay-host"></div>

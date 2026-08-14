@@ -381,7 +381,7 @@ kbd {
 }
 #preview.hidden { display: none; }
 /* 全屏放大：脱离分屏，铺满整个窗口（盖住文件区/终端/侧边栏）。md/html 放大后照样可看可编辑。
-   z-index 取 55，和图片编辑全屏一致——低于弹窗层（.input-overlay 60），未保存确认等弹窗才能浮在上面。 */
+   z-index 取 55，和图片编辑全屏一致——低于确认弹窗层（.input-overlay 1000）。 */
 #preview.is-max {
   position: fixed; inset: 0; z-index: 55;
   flex-basis: auto !important; width: auto !important; height: auto !important;
@@ -897,7 +897,7 @@ kbd {
 /* 保存主按钮：.primary 此前只在 preview-actions/editor-bar 下有样式，这里没兜住会露出原生白按钮 */
 .imgedit-export button.primary { border: 1px solid var(--accent); background: var(--accent); color: var(--accent-ink); font-weight: 600; padding: 5px 14px; border-radius: 7px; cursor: pointer; font-size: 12px; }
 .imgedit-export button.primary:hover { filter: brightness(1.06); }
-/* 编辑图片时面板撑满整窗——小预览栏里没法精细标注。靠 :has 感知编辑器 DOM：进入即全屏，任何退出路径（关闭/切文件/保存）替换掉 DOM 就自动还原，无需 JS 管理状态。z-index 必须低于弹窗层（.input-overlay 60），文字/另存为弹窗才能浮在上面 */
+/* 编辑图片时面板撑满整窗——小预览栏里没法精细标注。靠 :has 感知编辑器 DOM：进入即全屏，任何退出路径（关闭/切文件/保存）替换掉 DOM 就自动还原，无需 JS 管理状态。z-index 必须低于确认弹窗层（.input-overlay 1000），文字/另存为弹窗才能浮在上面 */
 #preview:has(.imgedit-tools) { position: fixed; inset: 0; z-index: 55; border: none; }
 #preview:has(.imgedit-tools) .preview-body { display: flex; flex-direction: column; }
 #preview:has(.imgedit-tools) .imgedit-canvas-wrap { flex: 1; min-height: 0; max-height: none; align-items: center; }
@@ -906,7 +906,8 @@ kbd {
 
 /* 通用输入弹窗 */
 .input-overlay {
-  position: fixed; inset: 0; background: rgba(0,0,0,0.42); z-index: 60;
+  /* 通用确认必须压过录像库等业务弹窗，避免确认窗显示在其背后、无法操作。 */
+  position: fixed; inset: 0; background: rgba(0,0,0,0.42); z-index: 1000;
   display: flex; align-items: flex-start; justify-content: center; padding-top: 18vh;
 }
 .input-dialog {
@@ -1389,15 +1390,23 @@ body { transition: background-color 0.28s ease, color 0.28s ease; }
 #replay-close { background: none; border: none; color: var(--text-dim); font-size: 16px; cursor: pointer; padding: 2px 8px; border-radius: 6px; }
 #replay-close:hover { background: var(--bg-3); color: var(--text); }
 .replay-body { flex: 1; display: flex; min-height: 0; }
-.replay-list { width: 240px; flex: none; border-right: 1px solid var(--border); overflow-y: auto; padding: 8px; scrollbar-width: thin; }
+.replay-list { width: 240px; flex: none; min-height: 0; max-height: none; border-right: 1px solid var(--border); display: flex; flex-direction: column; }
+.replay-list-actions { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 9px 10px; border-bottom: 1px solid var(--border); font-size: 11.5px; color: var(--text-dim); }
+.rp-select-all { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
+.rp-select-all input, .rp-item-check { accent-color: var(--accent); cursor: pointer; }
+#rp-delete-selected { border: 1px solid transparent; border-radius: 6px; background: transparent; color: #d0575d; font: inherit; padding: 3px 6px; cursor: pointer; }
+#rp-delete-selected:hover:not(:disabled) { background: color-mix(in srgb, #e5484d 12%, transparent); }
+#rp-delete-selected:disabled { color: var(--text-faint); cursor: default; }
+#replay-list { flex: 1; min-height: 0; overflow-y: auto; padding: 8px; scrollbar-width: thin; }
 .rp-item { padding: 9px 10px; border-radius: 8px; cursor: pointer; margin-bottom: 3px; border: 1px solid transparent; }
 .rp-item:hover { background: var(--bg-3); }
 .rp-item.active { background: var(--accent-soft); border-color: color-mix(in srgb, var(--accent) 40%, transparent); }
 .rp-item-top { display: flex; align-items: center; gap: 6px; font-size: 12.5px; color: var(--text); font-weight: 600; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.rp-item-title { overflow: hidden; text-overflow: ellipsis; }
 .rp-item-sub { font-size: 10.5px; color: var(--text-faint); margin-top: 2px; font-variant-numeric: tabular-nums; }
 .rp-dot-live { width: 7px; height: 7px; border-radius: 50%; background: #e5484d; flex: none; box-shadow: 0 0 0 0 rgba(229,72,77,0.6); animation: rpLive 1.4s ease-out infinite; }
 @keyframes rpLive { 0% { box-shadow: 0 0 0 0 rgba(229,72,77,0.5); } 100% { box-shadow: 0 0 0 6px rgba(229,72,77,0); } }
-.rp-item-del { float: right; opacity: 0; color: var(--text-faint); font-size: 12px; padding: 0 3px; }
+.rp-item-del { margin-left: auto; border: 0; background: transparent; opacity: 0; color: var(--text-faint); font-size: 12px; padding: 0 3px; cursor: pointer; }
 .rp-item:hover .rp-item-del { opacity: 1; }
 .rp-item-del:hover { color: #e5484d; }
 .replay-empty-list { padding: 24px 12px; font-size: 12px; color: var(--text-faint); text-align: center; line-height: 1.7; }
