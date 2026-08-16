@@ -282,10 +282,15 @@ window.FANBOX_DICT = {
   '翻会话日志中…': 'Digging through session logs…',
   '这个文件夹还没有 agent 会话记录': 'No agent sessions in this folder yet',
   '在这里跑过 Claude Code / Codex 之后，历史会话会出现在这里': 'Run Claude Code / Codex here and past sessions will appear',
+  '在这里跑过 Claude Code / Codex / Kimi / opencode 之后，历史会话会出现在这里': 'Run Claude Code, Codex, Kimi, or OpenCode here and past sessions will appear',
   '（无标题会话）': '(untitled session)',
   '在内嵌终端里接上这段会话的上下文继续': "Resume this session's context in the embedded terminal",
   '▶ 续上': '▶ Resume',
   '已在终端续上会话': 'Session resumed in terminal',
+  '全选': 'Select all',
+  '删除仅清理所选 AI 会话日志，不会删除项目文件': 'Deleting only clears the selected AI session logs, never project files',
+  '删除这条项目记忆': 'Delete this project memory',
+  '删除项目记忆失败': 'Failed to delete project memory',
 
   // ---------- AI 整理（终端交互式）----------
   '没找到 claude / codex 命令——AI 整理需要装其中一个 CLI': 'claude / codex command not found — AI organize needs one of these CLIs installed',
@@ -356,6 +361,13 @@ window.FANBOX_DICT = {
   '一键启动的 coding agent': 'Quick-launch coding agents',
   '勾选即生效 · 点「未装」复制安装命令': 'Changes apply instantly · click “not installed” to copy the install command',
   '高级：~/.fanbox/config.json 的 agents 数组可自定义命令 / 加新 agent': 'Advanced: override commands or add agents via the agents array in ~/.fanbox/config.json',
+  '自定义 agent': 'Custom agents',
+  '新增自定义 agent': 'Add custom agent',
+  '删除自定义 agent': 'Delete custom agent',
+  '编辑名称和启动命令': 'Edit name and launch command',
+  '自定义 agent 名称': 'Custom agent name',
+  '名称，例如：Aider': 'Name, e.g. Aider',
+  '点 ＋ 添加自己的 agent 或启动命令': 'Hit + to add your own agent or launch command',
   '未装': 'not installed',
   '已复制安装命令': 'Install command copied',
   '文件跟随：跟着当前终端 tab 的 agent，它改哪个文件，文件区和预览就跟到哪；html/md 边写边出实时预览（手动浏览即自动停）': "Follow files: tracks the current terminal tab's agent — the file view and preview follow whatever it edits; html/md render live as they are written (any manual browsing stops it)",
@@ -478,6 +490,10 @@ window.FANBOX_DICT = {
 window.FANBOX_DICT_RULES = [
   // agent 启动按钮（动态生成的 title/toast）
   [/^启动 (.+)：空闲终端就地启动，正跑着任务则新开标签$/, (m) => `Launch ${m[1]}: starts in the idle terminal, or opens a new tab if one is busy`],
+  [/^(.+) 启动命令$/, (m) => `${m[1]} launch command`],
+  [/^(.+) 已添加$/, (m) => `${m[1]} added`],
+  [/^(.+) 已删除$/, (m) => `${m[1]} deleted`],
+  [/^(.+) 已保存$/, (m) => `${m[1]} saved`],
   [/^打开 (.+) 桌面应用（该产品无终端 CLI 形态）$/, (m) => `Open the ${m[1]} desktop app (no terminal CLI available)`],
   [/^点击复制安装命令：(.+)$/, (m) => `Click to copy the install command: ${m[1]}`],
   // 状态栏：N 项 · N 文件夹 · N 文件 大小
@@ -554,6 +570,10 @@ window.FANBOX_DICT_RULES = [
   [/^当前目录 (.+)$/, (m) => `This folder ${m[1]}`],
   // 终端
   [/^已在终端启动 (.+)$/, (m) => `Started ${m[1]} in terminal`],
+  [/^删除 \((\d+)\)$/, (m) => `Delete (${m[1]})`],
+  [/^删除选中的 (\d+) 条项目记忆？仅删除对应 AI 会话日志，不会触碰项目文件，且无法恢复。$/, (m) => `Delete ${m[1]} selected project memories? This only deletes their AI session logs, never project files, and cannot be undone.`],
+  [/^删除这条项目记忆？仅删除对应 AI 会话日志，不会触碰项目文件，且无法恢复。$/, () => 'Delete this project memory? This only deletes its AI session log, never project files, and cannot be undone.'],
+  [/^已删除 (\d+) 条，另有 (\d+) 条删除失败$/, (m) => `Deleted ${m[1]}; ${m[2]} failed`],
   [/^没找到「(.+)」$/, (m) => `Couldn't find "${m[1]}"`],
   [/^未精确命中，已打开最接近的「(.+)」$/, (m) => `No exact match — opened the closest "${m[1]}"`],
   [/^（来自 (.+) 的片段）$/, (m) => `(snippet from ${m[1]})`],

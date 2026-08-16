@@ -650,7 +650,8 @@ async function releasePrepare(b) {
 // ---------- 项目记忆：这个文件夹里 AI 干过什么 ----------
 // 数据源：~/.claude/projects/<munge(cwd)>/*.jsonl + ~/.codex/sessions/**/rollout-*.jsonl（头部 cwd 匹配）
 //        + ~/.kimi-code/session_index.jsonl（全局索引→state.json）+ ~/.local/share/opencode/storage/session/**/ses_*.json（directory 字段匹配）。
-// 单会话解析结果按 (size, mtime) 缓存，再次打开只重解析有变化的文件。统一会话对象 {id, agent, title, firstT, lastT, userMsgs, files, skills}。
+// 单会话解析结果按 (size, mtime) 缓存，再次打开只重解析有变化的文件。统一会话对象 {id, agent, title, firstT, lastT, userMsgs, files, skills}；
+// source 仅留在服务端，用于按各 agent 的日志协议安全删除，绝不暴露为前端可传的绝对路径。
 // userMsgs 允许为 null 表示「未统计」（kimi/opencode 只读元数据不解析消息正文），前端遇到 null 不渲染条数；0 保留给「确实数过是零条」。
 const projMemCache = new Map(); // file -> { size, mtimeMs, sess }
 const mungeClaudeDir = (cwd) => cwd.replace(/[^A-Za-z0-9]/g, '-');
@@ -658,7 +659,7 @@ const mungeClaudeDir = (cwd) => cwd.replace(/[^A-Za-z0-9]/g, '-');
 async function parseClaudeSession(fp, st) {
   const hit = projMemCache.get(fp);
   if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit.sess;
-  const sess = { id: path.basename(fp, '.jsonl'), agent: 'claude', title: '', firstT: 0, lastT: st.mtimeMs, userMsgs: 0, files: [], skills: [] };
+  const sess = { id: path.basename(fp, '.jsonl'), agent: 'claude', title: '', firstT: 0, lastT: st.mtimeMs, userMsgs: 0, files: [], skills: [], source: { kind: 'claude', file: fp } };
   const filesSet = new Set(), skillsSet = new Set();
   // 流式逐行，廉价字符串预判后才 JSON.parse——大会话文件也不整读进内存
   const stream = fs.createReadStream(fp, { encoding: 'utf8' });
@@ -717,7 +718,7 @@ async function parseClaudeSession(fp, st) {
 async function parseCodexSession(fp, st) {
   const hit = projMemCache.get(fp);
   if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) return hit.sess;
-  const sess = { id: '', agent: 'codex', title: '', firstT: st.birthtimeMs || 0, lastT: st.mtimeMs, userMsgs: 0, files: [], skills: [] };
+  const sess = { id: '', agent: 'codex', title: '', firstT: st.birthtimeMs || 0, lastT: st.mtimeMs, userMsgs: 0, files: [], skills: [], source: { kind: 'codex', file: fp } };
   try {
     const txt = await fsp.readFile(fp, 'utf8');
     for (const line of txt.split('\n')) {
@@ -764,7 +765,7 @@ async function listKimiSessions(cwd) {
       if (hit && hit.size === st.size && hit.mtimeMs === st.mtimeMs) { out.push(hit.sess); continue; }
       const d = JSON.parse(await fsp.readFile(fp, 'utf8'));
       const title = String(d.title || d.lastPrompt || '').trim().slice(0, 160);
-      const sess = { id: rec.sessionId, agent: 'kimi', title, firstT: Date.parse(d.createdAt) || 0, lastT: Date.parse(d.updatedAt) || st.mtimeMs, userMsgs: null, files: [], skills: [] };
+      const sess = { id: rec.sessionId, agent: 'kimi', title, firstT: Date.parse(d.createdAt) || 0, lastT: Date.parse(d.updatedAt) || st.mtimeMs, userMsgs: null, files: [], skills: [], source: { kind: 'kimi', file: fp, dir: String(rec.sessionDir) } };
       projMemCache.set(fp, { size: st.size, mtimeMs: st.mtimeMs, sess });
       out.push(sess);
     } catch { /* 单条会话坏了不拖垮整个列表 */ }
@@ -799,7 +800,7 @@ async function listOpencodeSessions(cwd) {
       const d = JSON.parse(await fsp.readFile(fp, 'utf8'));
       const dir = String(d.directory || '');
       const t = d.time || {};
-      const sess = { id: String(d.id || path.basename(fp, '.json')), agent: 'opencode', title: String(d.title || '').trim().slice(0, 160), firstT: Number(t.created) || 0, lastT: Number(t.updated) || st.mtimeMs, userMsgs: null, files: [], skills: [] };
+      const sess = { id: String(d.id || path.basename(fp, '.json')), agent: 'opencode', title: String(d.title || '').trim().slice(0, 160), firstT: Number(t.created) || 0, lastT: Number(t.updated) || st.mtimeMs, userMsgs: null, files: [], skills: [], source: { kind: 'opencode', file: fp } };
       projMemCache.set(fp, { size: st.size, mtimeMs: st.mtimeMs, sess, dir });
       if (dir === cwd) out.push(sess);
     } catch { /* 单条会话坏了不拖垮整个列表 */ }
@@ -807,7 +808,13 @@ async function listOpencodeSessions(cwd) {
   return out;
 }
 
-async function projectMemory(p) {
+function projectMemoryKey(cwd, sess) {
+  const src = sess.source || {};
+  const target = src.file || src.dir || '';
+  return crypto.createHash('sha256').update(`${cwd}\0${src.kind || sess.agent}\0${target}`).digest('hex').slice(0, 24);
+}
+
+async function projectMemory(p, raw = false) {
   const cwd = resolvePath(p);
   const sessions = [];
   // Claude Code：项目目录名就是 munge 过的 cwd，正向算一遍直达
@@ -846,7 +853,87 @@ async function projectMemory(p) {
   // 没有正经标题的会话（纯 warmup / 空会话）沉底，按最近活跃排
   sessions.sort((a, b) => (b.title ? 1 : 0) - (a.title ? 1 : 0) || b.lastT - a.lastT);
   sessions.sort((a, b) => b.lastT - a.lastT);
-  return { ok: true, cwd, sessions: sessions.filter((s) => s.title || s.files.length).slice(0, 40) };
+  const visible = sessions.filter((s) => s.title || s.files.length).slice(0, 40);
+  if (raw) return { ok: true, cwd, sessions: visible };
+  return {
+    ok: true, cwd,
+    sessions: visible.map(({ source, ...sess }) => ({ ...sess, key: projectMemoryKey(cwd, { ...sess, source }) })),
+  };
+}
+
+const KIMI_INDEX = path.join(KIMI_HOME, 'session_index.jsonl');
+function isStrictSubpath(root, target) {
+  const rel = path.relative(root, target);
+  return !!rel && !rel.startsWith('..' + path.sep) && rel !== '..' && !path.isAbsolute(rel);
+}
+
+async function realChildPath(root, target) {
+  try {
+    const [realRoot, realTarget] = await Promise.all([fsp.realpath(root), fsp.realpath(target)]);
+    return isStrictSubpath(realRoot, realTarget) ? realTarget : null;
+  } catch { return null; }
+}
+
+async function removeKimiIndexEntry(sessionId, sessionDir) {
+  let text;
+  try { text = await fsp.readFile(KIMI_INDEX, 'utf8'); } catch { return; }
+  const target = path.resolve(sessionDir);
+  const kept = text.split('\n').filter((line) => {
+    try {
+      const row = JSON.parse(line);
+      return row.sessionId !== sessionId || path.resolve(String(row.sessionDir || '')) !== target;
+    } catch { return true; } // 保留坏行，删除操作绝不顺手篡改未知数据
+  });
+  await fsp.writeFile(KIMI_INDEX, kept.join('\n'), 'utf8');
+}
+
+// 删除策略由每个 adapter 自己决定：Claude/Codex/OpenCode 只删已识别的单会话日志；
+// Kimi 的会话是一整个目录，删目录并同步 session_index.jsonl，避免留下失效索引。
+async function removeProjectMemorySession(sess) {
+  const src = sess.source || {};
+  if (src.kind === 'claude') {
+    const fp = await realChildPath(CLAUDE_PROJ, src.file);
+    if (!fp || path.extname(fp) !== '.jsonl') throw new Error('Claude 会话文件校验失败');
+    await fsp.rm(fp, { force: true }); projMemCache.delete(src.file); return;
+  }
+  if (src.kind === 'codex') {
+    const fp = await realChildPath(CODEX_SESS, src.file);
+    if (!fp || path.extname(fp) !== '.jsonl') throw new Error('Codex 会话文件校验失败');
+    await fsp.rm(fp, { force: true }); projMemCache.delete(src.file); return;
+  }
+  if (src.kind === 'opencode') {
+    const fp = await realChildPath(OPENCODE_SESS, src.file);
+    if (!fp || !/^ses_.*\.json$/i.test(path.basename(fp))) throw new Error('OpenCode 会话文件校验失败');
+    await fsp.rm(fp, { force: true }); projMemCache.delete(src.file); return;
+  }
+  if (src.kind === 'kimi') {
+    const dir = await realChildPath(KIMI_HOME, src.dir);
+    const state = await realChildPath(KIMI_HOME, src.file);
+    if (!dir || !state || path.dirname(state) !== dir || path.basename(state) !== 'state.json') throw new Error('Kimi 会话目录校验失败');
+    await fsp.rm(dir, { recursive: true, force: true });
+    projMemCache.delete(src.file);
+    await removeKimiIndexEntry(sess.id, src.dir);
+    return;
+  }
+  throw new Error('不支持删除该工具的会话记录');
+}
+
+async function deleteProjectMemory(body) {
+  const keys = [...new Set(Array.isArray(body && body.keys) ? body.keys : [])]
+    .filter((key) => typeof key === 'string' && /^[a-f0-9]{24}$/.test(key)).slice(0, 40);
+  if (!keys.length) return { ok: false, error: '请选择要删除的项目记忆' };
+  const data = await projectMemory(body && body.path, true);
+  const wanted = new Set(keys);
+  const matches = data.sessions.filter((sess) => wanted.has(projectMemoryKey(data.cwd, sess)));
+  const deleted = [], failed = [];
+  for (const sess of matches) {
+    const key = projectMemoryKey(data.cwd, sess);
+    try { await removeProjectMemorySession(sess); deleted.push(key); }
+    catch (e) { failed.push({ key, error: String(e && e.message || e) }); }
+  }
+  // 找不到的会话大多是另一终端已清理的旧列表：如实返回，前端刷新后自然消失。
+  for (const key of keys) if (!matches.some((sess) => projectMemoryKey(data.cwd, sess) === key)) failed.push({ key, error: '会话已不存在或不再属于当前项目' });
+  return { ok: !failed.length, deleted, failed };
 }
 
 // ---------- 磁盘占用透视：算清当前目录每个子项的真实占用 ----------
@@ -2625,6 +2712,9 @@ const server = http.createServer(async (req, res) => {
     }
     if (p === '/api/project-memory') {
       return sendJSON(res, 200, await projectMemory(url.searchParams.get('path')));
+    }
+    if (p === '/api/project-memory/delete' && req.method === 'POST') {
+      return sendJSON(res, 200, await deleteProjectMemory(await readBody(req)));
     }
     if (p === '/api/lang' && req.method === 'POST') {
       const b = await readBody(req);

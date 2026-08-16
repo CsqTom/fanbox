@@ -1716,7 +1716,7 @@ function inputDialog(title, value = '', placeholder = '') {
 function confirmDialog(msg) {
   return new Promise((resolve) => {
     const ov = document.createElement('div');
-    ov.className = 'input-overlay';
+    ov.className = 'input-overlay confirm-overlay';
     ov.innerHTML = `<div class="input-dialog"><div class="input-title">${escapeHtml(msg)}</div><div class="input-actions"><button class="ghost-btn" data-act="no">取消</button><button class="primary" data-act="yes">确定</button></div></div>`;
     document.body.appendChild(ov);
     const done = (v) => { ov.remove(); document.removeEventListener('keydown', onKey, true); resolve(v); };
@@ -1797,41 +1797,73 @@ async function memoryPanel(dirPath) {
   }
   // 徽标/续接命令从注册表的 sessions 配置读，不再按 agent 逐个硬编码；没配置的兜底成首字母徽标
   const sessCfg = (agent) => (AGENT_REGISTRY.find((a) => a.id === agent) || {}).sessions || {};
-  body.innerHTML = d.sessions.map((s, i) => `
-    <div class="mem-sess">
-      <div class="mem-head" data-i="${i}">
-        <span class="mem-agent${s.agent === 'claude' ? '' : ' codex'}">${escapeHtml(sessCfg(s.agent).badge || (s.agent || '?')[0].toUpperCase())}</span>
-        <span class="mem-title">${escapeHtml(s.title || '（无标题会话）')}</span>
-        <button class="ghost-btn mem-resume" data-i="${i}" title="在内嵌终端里接上这段会话的上下文继续">▶ 续上</button>
-      </div>
-      <div class="mem-meta">${fmtTime(s.lastT)}${s.userMsgs != null ? ` · ${s.userMsgs} 条消息` : ''}${s.files.length ? ` · 改了 ${s.files.length} 个文件` : ''}${s.skills.length ? ' · ' + s.skills.map((k) => `<i class="mem-skill">${escapeHtml(k)}</i>`).join(' ') : ''}</div>
-      ${s.files.length ? `<div class="mem-files hidden">${s.files.map((f) => `<div class="mem-file" data-p="${escapeHtml(f)}" title="${escapeHtml(f)}">${escapeHtml(f.startsWith(dirPath + '/') ? f.slice(dirPath.length + 1) : f.replace(state.home, '~'))}</div>`).join('')}</div>` : ''}
-    </div>`).join('');
-  body.querySelectorAll('.mem-head').forEach((h) => {
-    h.onclick = (ev) => {
-      if (ev.target.closest('.mem-resume')) return;
-      const files = h.parentElement.querySelector('.mem-files');
-      if (files) files.classList.toggle('hidden');
-    };
-  });
-  body.querySelectorAll('.mem-resume').forEach((b) => {
-    b.onclick = () => {
-      const s = d.sessions[Number(b.dataset.i)];
-      const tpl = sessCfg(s.agent).resumeCmd || 'claude --dangerously-skip-permissions --resume {id}';
-      const cmd = tpl.replace('{id}', s.id);
-      close();
-      term.runInDir(dirPath, cmd, '已在终端续上会话');
-    };
-  });
-  body.querySelectorAll('.mem-file').forEach((f) => {
-    f.onclick = async () => {
-      const p = f.dataset.p;
-      close();
-      await navigate(dirOf(p));
-      const e = state.entries.find((x) => x.path === p);
-      if (e) { state.selected = p; openPreview(e); renderFiles(); }
-    };
-  });
+  let sessions = d.sessions;
+  const selected = new Set();
+  const empty = () => '<div class="empty-state">这个文件夹还没有 agent 会话记录<br><br><span class="usage-sub">在这里跑过 Claude Code / Codex / Kimi / opencode 之后，历史会话会出现在这里</span></div>';
+  const deleteSessions = async (keys) => {
+    const unique = [...new Set(keys)].filter(Boolean);
+    if (!unique.length) return;
+    const label = unique.length === 1 ? '删除这条项目记忆？仅删除对应 AI 会话日志，不会触碰项目文件，且无法恢复。' : `删除选中的 ${unique.length} 条项目记忆？仅删除对应 AI 会话日志，不会触碰项目文件，且无法恢复。`;
+    if (!await confirmDialog(label)) return;
+    const result = await apiPost('/api/project-memory/delete', { path: dirPath, keys: unique }).catch(() => null);
+    if (!result) { toast('删除项目记忆失败', true); return; }
+    const removed = new Set(result.deleted || []);
+    sessions = sessions.filter((s) => !removed.has(s.key));
+    removed.forEach((key) => selected.delete(key));
+    if ((result.failed || []).length) toast(`已删除 ${removed.size} 条，另有 ${result.failed.length} 条删除失败`, true);
+    render();
+  };
+  const render = () => {
+    if (!sessions.length) { body.innerHTML = empty(); return; }
+    const count = selected.size;
+    body.innerHTML = `<div class="mem-list-actions"><label class="mem-select-all"><input type="checkbox" class="mem-select-all-check" ${count === sessions.length ? 'checked' : ''}> 全选</label><button class="mem-delete-selected" type="button" ${count ? '' : 'disabled'}>${count ? `删除 (${count})` : '删除'}</button></div><div class="mem-delete-note">删除仅清理所选 AI 会话日志，不会删除项目文件</div>` + sessions.map((s, i) => `
+      <div class="mem-sess${selected.has(s.key) ? ' selected' : ''}">
+        <div class="mem-head" data-i="${i}">
+          <input class="mem-check" data-key="${s.key}" type="checkbox" aria-label="选择 ${escapeHtml(s.title || '无标题会话')}" ${selected.has(s.key) ? 'checked' : ''}>
+          <span class="mem-agent${s.agent === 'claude' ? '' : ' codex'}">${escapeHtml(sessCfg(s.agent).badge || (s.agent || '?')[0].toUpperCase())}</span>
+          <span class="mem-title">${escapeHtml(s.title || '（无标题会话）')}</span>
+          <button class="ghost-btn mem-resume" data-i="${i}" title="在内嵌终端里接上这段会话的上下文继续">▶ 续上</button>
+          <button class="mem-delete" data-key="${s.key}" type="button" title="删除这条项目记忆">✕</button>
+        </div>
+        <div class="mem-meta">${fmtTime(s.lastT)}${s.userMsgs != null ? ` · ${s.userMsgs} 条消息` : ''}${s.files.length ? ` · 改了 ${s.files.length} 个文件` : ''}${s.skills.length ? ' · ' + s.skills.map((k) => `<i class="mem-skill">${escapeHtml(k)}</i>`).join(' ') : ''}</div>
+        ${s.files.length ? `<div class="mem-files hidden">${s.files.map((f) => `<div class="mem-file" data-p="${escapeHtml(f)}" title="${escapeHtml(f)}">${escapeHtml(f.startsWith(dirPath + '/') ? f.slice(dirPath.length + 1) : f.replace(state.home, '~'))}</div>`).join('')}</div>` : ''}
+      </div>`).join('');
+    const all = body.querySelector('.mem-select-all-check');
+    all.indeterminate = count > 0 && count < sessions.length;
+    all.onchange = () => { if (all.checked) sessions.forEach((s) => selected.add(s.key)); else selected.clear(); render(); };
+    body.querySelector('.mem-delete-selected').onclick = () => deleteSessions([...selected]);
+    body.querySelectorAll('.mem-check').forEach((check) => {
+      check.onclick = (ev) => ev.stopPropagation();
+      check.onchange = () => { if (check.checked) selected.add(check.dataset.key); else selected.delete(check.dataset.key); render(); };
+    });
+    body.querySelectorAll('.mem-delete').forEach((btn) => { btn.onclick = (ev) => { ev.stopPropagation(); deleteSessions([btn.dataset.key]); }; });
+    body.querySelectorAll('.mem-head').forEach((h) => {
+      h.onclick = (ev) => {
+        if (ev.target.closest('.mem-resume, .mem-delete, .mem-check')) return;
+        const files = h.parentElement.querySelector('.mem-files');
+        if (files) files.classList.toggle('hidden');
+      };
+    });
+    body.querySelectorAll('.mem-resume').forEach((b) => {
+      b.onclick = () => {
+        const s = sessions[Number(b.dataset.i)];
+        const tpl = sessCfg(s.agent).resumeCmd || 'claude --dangerously-skip-permissions --resume {id}';
+        const cmd = tpl.replace('{id}', s.id);
+        close();
+        term.runInDir(dirPath, cmd, '已在终端续上会话');
+      };
+    });
+    body.querySelectorAll('.mem-file').forEach((f) => {
+      f.onclick = async () => {
+        const p = f.dataset.p;
+        close();
+        await navigate(dirOf(p));
+        const e = state.entries.find((x) => x.path === p);
+        if (e) { state.selected = p; openPreview(e); renderFiles(); }
+      };
+    });
+  };
+  render();
 }
 
 // 回合存档：agent 每轮开工前的自动快照列表 + 一键回滚。
@@ -2609,7 +2641,7 @@ const wechatView = {
 // ---------- coding agent 启动按钮（#38：内置注册表 + 设置面板开关 + config 自定义） ----------
 // 三层：① AGENT_REGISTRY 内置 11 个主流 agent（图标在 /assets/agents/）
 //      ② 设置面板（⚙ 滑杆按钮）勾选启用哪些，存 config.json 的 enabledAgents，默认 claude + codex
-//      ③ config.json 的 agents 数组做高级自定义：同 id 覆盖内置命令，新 id 追加按钮
+//      ③ 设置面板可新增/删除自定义 agent；config.json 的 agents 数组仍兼容同 id 覆盖内置命令
 // app: true 的是桌面应用（无终端 CLI 形态，官方确认），按钮改为 open -a 拉起，检测走 open -Ra
 // sessions: 有会话适配器的 agent 声明续接方式——badge 是项目记忆面板的徽标，resumeCmd 里 {id} 占位符替换成会话 id；
 //           没有 sessions 字段 = 该 agent 暂不支持会话回溯（服务端也没有对应适配器）
@@ -2674,20 +2706,47 @@ function activeAgents() {
     if (!on.has(a.id)) continue;
     list.push(ov ? { ...a, label: ov.label || a.label, cmd: ov.cmd } : a);
   }
-  for (const [id, a] of byId) list.push({ id, label: a.label || id, cmd: a.cmd });
+  for (const [id, a] of byId) list.push({ id, label: a.label || id, cmd: a.cmd, _custom: true });
   return list;
+}
+
+// 自定义按钮没有品牌资源：从用户填写的名称中取第一个未被其他启动按钮占用的字符。
+// 同一个首字冲突时自然向后取（Gemini → G，Grok → r），中英文都按单个 Unicode 字符处理。
+function customAgentGlyphs(agents, occupied = []) {
+  const used = new Set(occupied.map((ch) => String(ch).toLocaleUpperCase()).filter(Boolean)), glyphs = new Map();
+  for (const a of agents) {
+    const chars = Array.from(String(a.label || a.id || '').replace(/\s/g, ''));
+    let glyph = chars.find((ch) => !used.has(ch.toLocaleUpperCase()));
+    if (!glyph) glyph = chars.find((ch) => ch.trim()) || '+';
+    glyphs.set(a.id, glyph);
+    used.add(glyph.toLocaleUpperCase());
+  }
+  return glyphs;
+}
+
+function nextCustomAgentId(label) {
+  const used = new Set([...AGENT_REGISTRY.map((a) => a.id), ...agentState.custom.map((a) => a.id)]);
+  const stem = String(label || '').toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '') || 'agent';
+  const base = ('custom-' + stem).slice(0, 28).replace(/-+$/g, '') || 'custom-agent';
+  let id = base, n = 2;
+  while (used.has(id)) id = `${base.slice(0, Math.max(1, 31 - String(n).length))}-${n++}`;
+  return id;
 }
 
 async function renderAgentButtons() {
   const anchor = $('#agent-config');
   anchor.parentElement.querySelectorAll('button[data-agent]').forEach((b) => b.remove());
-  for (const a of activeAgents()) {
+  const agents = activeAgents();
+  const customGlyphs = customAgentGlyphs(agents.filter((a) => a._custom), agents.filter((a) => !a._custom).map((a) => Array.from(String(a.label || a.id))[0]));
+  for (const a of agents) {
     const b = document.createElement('button');
-    b.className = 'agent-launch';
+    b.className = 'agent-launch' + (a._custom ? ' custom-agent' : '');
     b.dataset.agent = a.id;
     b.id = 'term-' + String(a.id).replace(/[^\w-]/g, '');
     b.title = a.app ? `打开 ${a.label} 桌面应用（该产品无终端 CLI 形态）` : `启动 ${a.label}：空闲终端就地启动，正跑着任务则新开标签`;
-    b.innerHTML = (await agentIconHtml(a.id)) || `<span class="agent-abbr">${escapeHtml(String(a.label || a.id).slice(0, 2))}</span>`;
+    b.innerHTML = a._custom
+      ? `<span class="agent-abbr">${escapeHtml(customGlyphs.get(a.id) || '+')}</span>`
+      : (await agentIconHtml(a.id)) || `<span class="agent-abbr">${escapeHtml(String(a.label || a.id).slice(0, 2))}</span>`;
     b.onclick = () => { wechatView.close(); term.launchAgent(a.cmd); };
     anchor.parentElement.insertBefore(b, anchor);
   }
@@ -2700,6 +2759,8 @@ const agentsPop = {
   close() { if (!this.el) return; this.el.remove(); this.el = null; document.removeEventListener('mousedown', this._out, true); },
   open() {
     const on = new Set(agentState.enabled || AGENT_DEFAULTS);
+    const custom = agentState.custom.filter((a) => a && a.id && !AGENT_REGISTRY.some((builtin) => builtin.id === a.id));
+    const customGlyphs = customAgentGlyphs(custom, activeAgents().filter((a) => !a._custom).map((a) => Array.from(String(a.label || a.id))[0]));
     const pop = document.createElement('div');
     pop.className = 'agents-pop';
     pop.innerHTML = `<div class="ap-head">一键启动的 coding agent</div>
@@ -2711,6 +2772,14 @@ const agentsPop = {
           <span class="ap-flag" data-flag="${a.id}"></span>
           <button class="ap-edit" type="button" data-edit="${a.id}" title="编辑启动命令和参数">编辑</button>
         </label>`).join('')}</div>
+      <div class="ap-head ap-sub ap-custom-head">自定义 agent <button class="ap-custom-add" type="button" title="新增自定义 agent">＋</button></div>
+      <div class="ap-custom-list">${custom.length ? custom.map((a) => `
+        <div class="ap-row ap-custom-row" data-custom="${escapeHtml(a.id)}">
+          <span class="ap-ic"><span class="agent-abbr">${escapeHtml(customGlyphs.get(a.id) || '+')}</span></span>
+          <span class="ap-name" title="${escapeHtml(a.cmd)}">${escapeHtml(a.label || a.id)}</span>
+          <button class="ap-edit" type="button" data-custom-edit="${escapeHtml(a.id)}" title="编辑名称和启动命令">编辑</button>
+          <button class="ap-custom-remove" type="button" data-custom-remove="${escapeHtml(a.id)}" title="删除自定义 agent">−</button>
+        </div>`).join('') : '<div class="ap-custom-empty">点 ＋ 添加自己的 agent 或启动命令</div>'}</div>
       <div class="ap-head ap-sub">终端渲染</div>
       <label class="ap-row" data-webgl title="长时间中文输出偶发乱码时可关掉：改用兼容渲染（DOM），立即生效，稍慢但稳">
         <input type="checkbox" ${(() => { try { return localStorage.getItem('fanbox.noWebgl') === '1' ? '' : 'checked'; } catch { return 'checked'; } })()}>
@@ -2721,7 +2790,7 @@ const agentsPop = {
         <span class="ap-name">fanbox-agent skill</span>
         <span class="ap-flag" data-skill-flag="fanbox-agent"></span>
       </div>
-      <div class="ap-foot">勾选即生效 · 点「未装」复制安装命令<br>高级：~/.fanbox/config.json 的 agents 数组可自定义命令 / 加新 agent</div>`;
+      <div class="ap-foot">勾选即生效 · 点「未装」复制安装命令</div>`;
     document.body.appendChild(pop);
     const r = $('#agent-config').getBoundingClientRect();
     pop.style.top = Math.round(r.bottom + 6) + 'px';
@@ -2756,7 +2825,49 @@ const agentsPop = {
         catch { toast('保存失败', true); }
       };
     });
-    this._out = (ev) => { if (!pop.contains(ev.target) && !$('#agent-config').contains(ev.target)) this.close(); };
+    const addCustom = async () => {
+      this.close();
+      const label = await inputDialog('新增自定义 agent', '', '名称，例如：Aider');
+      if (!label) { this.open(); return; }
+      const cmd = await inputDialog(`${label} 启动命令`, '', '例如：aider --model sonnet');
+      if (!cmd) { this.open(); return; }
+      agentState.custom = [...agentState.custom, { id: nextCustomAgentId(label), label, cmd }];
+      await renderAgentButtons();
+      try { await saveAgentsConfig(); toast(`${label} 已添加`); }
+      catch { toast('保存失败', true); }
+      this.open();
+    };
+    pop.querySelector('.ap-custom-add').onclick = (ev) => { ev.preventDefault(); ev.stopPropagation(); addCustom(); };
+    pop.querySelectorAll('[data-custom-remove]').forEach((btn) => {
+      btn.onclick = async (ev) => {
+        ev.preventDefault(); ev.stopPropagation();
+        const id = btn.dataset.customRemove;
+        const item = agentState.custom.find((a) => a.id === id);
+        agentState.custom = agentState.custom.filter((a) => a.id !== id);
+        await renderAgentButtons();
+        try { await saveAgentsConfig(); toast(`${item?.label || '自定义 agent'} 已删除`); }
+        catch { toast('保存失败', true); }
+        this.close(); this.open();
+      };
+    });
+    pop.querySelectorAll('[data-custom-edit]').forEach((btn) => {
+      btn.onclick = async (ev) => {
+        ev.preventDefault(); ev.stopPropagation();
+        const item = agentState.custom.find((a) => a.id === btn.dataset.customEdit);
+        if (!item) return;
+        this.close();
+        const label = await inputDialog('自定义 agent 名称', item.label || item.id, '名称，例如：Aider');
+        if (!label) { this.open(); return; }
+        const cmd = await inputDialog(`${label} 启动命令`, item.cmd, '例如：aider --model sonnet');
+        if (!cmd) { this.open(); return; }
+        agentState.custom = agentState.custom.map((a) => a.id === item.id ? { ...a, label, cmd } : a);
+        await renderAgentButtons();
+        try { await saveAgentsConfig(); toast(`${label} 已保存`); }
+        catch { toast('保存失败', true); }
+        this.open();
+      };
+    });
+    this._out = (ev) => { if (!document.querySelector('.input-overlay') && !pop.contains(ev.target) && !$('#agent-config').contains(ev.target)) this.close(); };
     document.addEventListener('mousedown', this._out, true);
   },
   // 内置 skill 安装状态：未装 →「安装」可点；装过但内容旧 →「可更新」可点；最新 →「已装 ✓」

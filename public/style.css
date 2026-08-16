@@ -357,7 +357,7 @@ kbd {
 #file-area.fa-narrow .list .row > :nth-child(4) { display: none; }
 #file-area.fa-tight .list .row { grid-template-columns: 30px 1fr 26px; }
 #file-area.fa-tight .list .row > :nth-child(3) { display: none; }
-/* 自定义 agent 启动按钮：没有品牌图标时显示两字缩写 */
+/* 自定义 agent 启动按钮：没有品牌图标时显示名称中自动挑出的唯一单字 */
 .agent-launch .agent-abbr { font-size: 10px; font-weight: 700; letter-spacing: 0.5px; }
 
 /* 收藏按钮（悬停出现，可直接收藏，无需先预览） */
@@ -708,15 +708,26 @@ kbd {
 
 /* 项目记忆 */
 .sb-links { display: flex; gap: 14px; margin-left: auto; }
-.mem-dialog { width: 680px; max-width: 94vw; }
+.mem-dialog { width: 820px; max-width: 94vw; }
 .mem-body { max-height: 68vh; overflow-y: auto; margin-top: 8px; }
+.mem-list-actions { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 7px 6px 8px; background: var(--bg-2); border-bottom: 1px solid var(--border); font-size: 11.5px; color: var(--text-dim); }
+.mem-select-all { display: inline-flex; align-items: center; gap: 6px; cursor: pointer; user-select: none; }
+.mem-select-all input, .mem-check { accent-color: var(--accent); cursor: pointer; }
+.mem-delete-selected { border: 1px solid transparent; border-radius: 6px; background: transparent; color: #d0575d; font: inherit; padding: 3px 6px; cursor: pointer; }
+.mem-delete-selected:hover:not(:disabled) { background: color-mix(in srgb, #e5484d 12%, transparent); }
+.mem-delete-selected:disabled { color: var(--text-faint); cursor: default; }
+.mem-delete-note { padding: 7px 6px 5px; font-size: 10.5px; color: var(--text-faint); }
 .mem-sess { padding: 9px 6px; border-bottom: 1px solid var(--border); }
 .mem-sess:last-child { border-bottom: none; }
+.mem-sess.selected { background: color-mix(in srgb, var(--accent-soft) 72%, transparent); }
 .mem-head { display: flex; align-items: flex-start; gap: 8px; cursor: pointer; }
 .mem-agent { flex: none; min-width: 20px; height: 18px; padding: 0 3px; border-radius: 5px; display: inline-flex; align-items: center; justify-content: center; font-family: var(--font-mono); font-size: 10px; font-weight: 800; background: var(--accent-soft); color: var(--accent); margin-top: 1px; }
 .mem-agent.codex { background: var(--bg-3); color: var(--text-dim); }
 .mem-title { flex: 1; font-size: 12.5px; line-height: 1.45; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
 .mem-resume { flex: none; font-size: 11px; padding: 3px 8px; }
+.mem-delete { flex: none; border: 0; background: transparent; color: var(--text-faint); opacity: 0; font-size: 12px; padding: 3px; cursor: pointer; }
+.mem-sess:hover .mem-delete { opacity: 1; }
+.mem-delete:hover { color: #e5484d; }
 .mem-meta { font-size: 11px; color: var(--text-faint); margin: 4px 0 0 28px; }
 .mem-skill { font-style: normal; font-family: var(--font-mono); font-size: 10px; padding: 1px 5px; border-radius: 4px; background: var(--accent-soft); color: var(--accent); }
 .mem-files { margin: 6px 0 0 28px; }
@@ -922,6 +933,8 @@ kbd {
   position: fixed; inset: 0; background: rgba(0,0,0,0.42); z-index: 1000;
   display: flex; align-items: flex-start; justify-content: center; padding-top: 18vh;
 }
+/* 删除/覆盖等确认需要落在当前弹窗正中；常规输入窗仍保留略靠上的阅读位置。 */
+.input-overlay.confirm-overlay { align-items: center; padding-top: 0; }
 .input-dialog {
   width: 420px; max-width: 92vw; background: var(--bg-2); border: 1px solid var(--border);
   border-radius: 14px; box-shadow: var(--shadow); padding: 18px;
@@ -1154,22 +1167,32 @@ kbd {
 .term-actions .agent-launch { display: inline-flex; align-items: center; justify-content: center; padding: 3px 6px; color: var(--text); }
 .term-actions .agent-launch:hover { background: var(--bg-3); }
 .term-actions .agent-launch svg, .term-actions .agent-launch img { display: block; flex: none; width: 15px; height: 15px; }
+.term-actions .agent-launch.custom-agent .agent-abbr { font-size: 15px; line-height: 15px; letter-spacing: 0; }
 .term-actions .agent-launch + #agent-config { margin-left: 2px; } /* agent 按钮成组，设置入口贴在组尾 */
 
 /* agent 启动入口设置面板（#38） */
 .agents-pop { position: fixed; z-index: 200; width: 300px; display: flex; flex-direction: column; background: var(--bg-2); border: 1px solid var(--border); border-radius: 10px; box-shadow: 0 12px 40px rgba(0,0,0,0.32); overflow: hidden; }
 .agents-pop .ap-head { padding: 9px 12px; font-size: 12px; font-weight: 600; color: var(--text-dim); border-bottom: 1px solid var(--border); }
 .agents-pop .ap-head.ap-sub { border-top: 1px solid var(--border); border-bottom: none; }
+.agents-pop .ap-custom-head { display: flex; align-items: center; justify-content: space-between; }
 .agents-pop .ap-list { overflow-y: auto; max-height: 46vh; padding: 4px 0; }
+.agents-pop .ap-custom-list { padding: 2px 0 4px; }
 .agents-pop .ap-row { display: flex; align-items: center; gap: 9px; padding: 6px 12px; cursor: pointer; font-size: 13px; color: var(--text); }
 .agents-pop .ap-row:hover { background: var(--bg-3); }
 .agents-pop .ap-row input { accent-color: var(--accent); margin: 0; }
 .agents-pop .ap-ic { display: inline-flex; width: 15px; justify-content: center; }
 .agents-pop .ap-ic svg, .agents-pop .ap-ic img { width: 15px; height: 15px; display: block; }
+.agents-pop .ap-custom-row .agent-abbr { font-size: 15px; font-weight: 700; line-height: 15px; }
 .agents-pop .ap-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .agents-pop .ap-flag { font-size: 11px; color: var(--yellow); cursor: copy; flex: none; }
 .agents-pop .ap-edit { flex: none; border: 1px solid var(--border); border-radius: 5px; padding: 2px 6px; background: transparent; color: var(--text-dim); font: inherit; font-size: 11px; cursor: pointer; }
 .agents-pop .ap-edit:hover { color: var(--accent); border-color: var(--accent); }
+.agents-pop .ap-custom-add, .agents-pop .ap-custom-remove { flex: none; border: 1px solid var(--border); border-radius: 5px; background: transparent; color: var(--text-dim); font: inherit; cursor: pointer; }
+.agents-pop .ap-custom-add { width: 22px; height: 22px; font-size: 17px; line-height: 1; }
+.agents-pop .ap-custom-add:hover { color: var(--accent); border-color: var(--accent); }
+.agents-pop .ap-custom-remove { width: 21px; height: 21px; font-size: 17px; line-height: 1; color: #d0575d; }
+.agents-pop .ap-custom-remove:hover { border-color: #d0575d; background: color-mix(in srgb, #e5484d 12%, transparent); }
+.agents-pop .ap-custom-empty { padding: 7px 12px 9px 36px; font-size: 11px; color: var(--text-faint); }
 .agents-pop .ap-foot { padding: 8px 12px; font-size: 11px; color: var(--text-dim); border-top: 1px solid var(--border); line-height: 1.7; }
 
 #xterm-host { flex: 1; position: relative; min-height: 0; overflow: hidden; background: var(--bg); }
