@@ -828,8 +828,18 @@ kbd {
   border: 1px solid var(--border); border-radius: var(--radius); background: var(--bg);
   padding: 22px 26px; box-sizing: border-box; animation: edIn 0.18s ease;
 }
-.read-host .md-body { max-width: 760px; }
+.read-host .md-body {
+  width: 100%; max-width: 760px; min-width: 0; overflow-wrap: anywhere; word-break: break-word;
+}
 .read-host .md-body img { max-width: 100%; height: auto; border-radius: 6px; }
+.read-host, .crepe-host, .typeset-host {
+  width: 100%; max-width: 100%; min-width: 0; overflow-x: hidden;
+}
+.md-body pre {
+  max-width: 100%; overflow-x: hidden; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word;
+}
+.md-body table { max-width: 100%; table-layout: fixed; overflow-wrap: anywhere; word-break: break-word; }
+.md-body th, .md-body td { overflow-wrap: anywhere; word-break: break-word; }
 /* 排版档：文章按主题自带的白底/米底铺在深色工作区上，像一张放在桌面上的纸。
    内部一律用内联样式（要粘到公众号），皮肤的 CSS 变量在这里一概不参与 */
 .typeset-host {
@@ -882,6 +892,12 @@ kbd {
   background: transparent;
 }
 .crepe-host .milkdown .ProseMirror { padding: 22px 26px; }
+.crepe-host .milkdown, .crepe-host .milkdown .ProseMirror {
+  min-width: 0; max-width: 100%; overflow-wrap: anywhere; word-break: break-word;
+}
+.crepe-host .milkdown pre, .crepe-host .milkdown code {
+  max-width: 100%; white-space: pre-wrap; overflow-wrap: anywhere; word-break: break-word;
+}
 /* 编辑器面板进入的物理感淡入，避免 DOM 替换的硬切 */
 .crepe-host, .mona-host, .imgedit-canvas-wrap { animation: edIn 0.18s ease; }
 @keyframes edIn { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
